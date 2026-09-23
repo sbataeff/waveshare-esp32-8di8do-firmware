@@ -58,8 +58,17 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
  #latChartWrap{background:#0d1117;border-radius:6px;padding:6px;position:relative}
  #latChart{width:100%;height:120px;display:block}
  #latEmpty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#93a1b7;font-size:12px;text-align:center;padding:0 20px}
+ .topBar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+ .topBar h1{margin:0}
+ .wgToggleBtn{padding:8px 16px;border-radius:20px;font-family:ui-monospace,Consolas,monospace;font-size:12px;font-weight:bold;cursor:pointer;border:1px solid #3a4256;background:#2a3140;color:#e6e6e6}
+ .wgToggleBtn.on{background:#245c3d;border-color:#3ddc84;color:#3ddc84}
+ .wgToggleBtn.off{background:#3d1e1e;border-color:#7a3a2f;color:#e0776d}
+ body.wgPaused .grid{pointer-events:none;opacity:.5;filter:saturate(.5)}
 </style></head><body>
-<h1>WaveShare ESP32 8DI/8DO Console</h1>
+<div class="topBar">
+  <h1>WaveShare ESP32 8DI/8DO Console</h1>
+  <button id="wgToggle" class="wgToggleBtn on">● LIVE — click to Disable</button>
+</div>
 <div id="connBanner"></div>
 <div class="grid">
   <div class="card"><h2>Digital Inputs</h2><div id="diList"></div></div>
@@ -129,6 +138,14 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <div class="card"><h2>Status / Debug Log</h2><div id="log"></div></div>
 </div>
 <script>
+// Master enable/disable: when false, ALL communication with the ESP32
+// stops (polling, camera stream, ping test/ticker) so the page can be left
+// open on a phone hotspot without chewing data in the background. This
+// flag is the authoritative gate — espFetch() and connectCamStream() both
+// refuse to run while it's false, as a backstop beyond just pausing the
+// timers, so nothing can sneak a request through.
+let webGuiEnabled = true;
+
 // Rows are built once and updated in place on every poll — avoids
 // innerHTML churn (which was re-creating all 16 rows 4x/sec and adding
 // to the perceived lag) and lets output clicks update instantly instead
@@ -181,8 +198,9 @@ let lastGoodPollMs = Date.now();
 const STALE_AFTER_MS = 2000;
 
 function updateConnBanner(){
-  const staleFor = Date.now() - lastGoodPollMs;
   const banner = document.getElementById('connBanner');
+  if (!webGuiEnabled) { banner.style.display = 'none'; return; } // paused on purpose, not an error
+  const staleFor = Date.now() - lastGoodPollMs;
   if (staleFor > STALE_AFTER_MS) {
     banner.style.display = 'block';
     banner.textContent = '⚠ NOT LIVE — no response from ESP32 for ' + Math.round(staleFor/1000) +
@@ -198,10 +216,17 @@ function updateConnBanner(){
 // estimate per direction since the browser can't see raw HTTP/TCP framing.
 const HTTP_OVERHEAD_EST_BYTES = 200;
 let espRxBytes = 0, espTxBytes = 0;
+// Shared abort controller for every espFetch() call: disabling the WebGUI
+// aborts it, which cancels any request already in flight at that exact
+// moment (not just future ones — the `webGuiEnabled` check alone only
+// stops *new* requests from starting) and swaps in a fresh controller for
+// requests made after re-enabling.
+let pollAbortController = new AbortController();
 async function espFetch(url, opts){
+  if (!webGuiEnabled) throw new Error('WebGUI disabled');
   const body = opts && opts.body;
   espTxBytes += (typeof body === 'string' ? body.length : 0) + HTTP_OVERHEAD_EST_BYTES;
-  const r = await fetch(url, opts);
+  const r = await fetch(url, Object.assign({ signal: pollAbortController.signal }, opts));
   const cl = r.headers.get('content-length');
   if (cl !== null) {
     espRxBytes += parseInt(cl, 10) + HTTP_OVERHEAD_EST_BYTES;
@@ -240,7 +265,7 @@ async function refreshStatus(){
       <div class="kv"><span>Free heap</span><span>${d.free_heap}B</span></div>
       <div class="kv"><span>Your (client) IP</span><span>${d.client_ip}</span></div>
       <div class="kv"><span>Your User-Agent</span><span style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${d.client_ua}</span></div>`;
-  }catch(e){ document.getElementById('log').textContent = 'status fetch failed: '+e; }
+  }catch(e){ if (webGuiEnabled) document.getElementById('log').textContent = 'status fetch failed: '+e; }
   finally{ statusInflight = false; }
 }
 let logInflight = false;
@@ -312,7 +337,7 @@ function indexOfBytes(buf, pattern, from){
 }
 
 async function connectCamStream(url){
-  if (!url) return;
+  if (!url || !webGuiEnabled) return;
   camStreamGeneration++;
   const myGen = camStreamGeneration;
   if (camAbortController) camAbortController.abort();
@@ -400,7 +425,6 @@ async function connectCamStream(url){
 let savedCamUrl;
 try { savedCamUrl = localStorage.getItem('camUrl'); } catch(e) {}
 camUrlInput.value = savedCamUrl || CAM_DEFAULT_URL;
-connectCamStream(camUrlInput.value);
 
 document.getElementById('camSetBtn').onclick = () => {
   const url = camUrlInput.value.trim();
@@ -412,9 +436,13 @@ document.getElementById('camRetryBtn').onclick = () => connectCamStream(camUrlIn
 // already in flight — a slow initial connect shouldn't get restarted every
 // second before it even has a chance to finish), try again. This IS the
 // "is the camera active" test: the connect attempt itself is the probe.
-setInterval(() => {
-  if (!camConnected && !camAttemptInFlight) connectCamStream(camUrlInput.value.trim());
-}, 1000);
+let camRetryTimer = null;
+function startCamRetryTimer(){
+  if (camRetryTimer) clearInterval(camRetryTimer);
+  camRetryTimer = setInterval(() => {
+    if (!camConnected && !camAttemptInFlight) connectCamStream(camUrlInput.value.trim());
+  }, 1000);
+}
 
 // Connection speed test: fetches /api/ping?size=N (the board streams back
 // exactly N bytes) and times the full round trip client-side. Payload is
@@ -723,18 +751,58 @@ bwRateSelect.onchange = () => {
   startBwSampling();
   drawBandwidthChart();
 };
-startBwSampling();
-
 buildRows();
-setInterval(refreshStatus, 150);
-setInterval(refreshLog, 1000);
-setInterval(refreshClients, 1000);
-setInterval(updateConnBanner, 500);
+
+// Master enable/disable, wired to the top-right button. Disabling stops
+// every timer (polling, camera retry, bandwidth sampling, latency ticker)
+// and aborts any in-flight camera stream, so nothing keeps talking to the
+// ESP32 in the background — the point being to leave the page open on a
+// phone hotspot without it quietly chewing data. Re-enabling resumes
+// everything, including auto-restarting the ticker if it was on before.
+let statusTimer = null, logTimer = null, clientsTimer = null, connBannerTimer = null;
+
+function setWebGuiEnabled(enabled){
+  webGuiEnabled = enabled;
+  const btn = document.getElementById('wgToggle');
+  btn.textContent = enabled ? '● LIVE — click to Disable' : '○ PAUSED — click to Enable';
+  btn.className = 'wgToggleBtn ' + (enabled ? 'on' : 'off');
+  document.body.classList.toggle('wgPaused', !enabled);
+
+  clearInterval(statusTimer); clearInterval(logTimer); clearInterval(clientsTimer); clearInterval(connBannerTimer);
+  clearInterval(camRetryTimer); clearInterval(bwTimer); clearInterval(tickerTimer);
+
+  if (!enabled) {
+    pollAbortController.abort(); // cancel anything already in flight, not just future requests
+    camStreamGeneration++; // invalidate any open camera stream loop
+    if (camAbortController) camAbortController.abort();
+    camConnected = false;
+    camAttemptInFlight = false;
+    camImg.style.display = 'none';
+    camError.style.display = 'block';
+    document.getElementById('connBanner').style.display = 'none';
+    return;
+  }
+
+  pollAbortController = new AbortController(); // fresh controller — an aborted one can't be reused
+  lastGoodPollMs = Date.now(); // don't flash a stale-connection banner for the paused gap
+  statusTimer = setInterval(refreshStatus, 150);
+  logTimer = setInterval(refreshLog, 1000);
+  clientsTimer = setInterval(refreshClients, 1000);
+  connBannerTimer = setInterval(updateConnBanner, 500);
+  refreshStatus(); refreshLog(); refreshClients();
+  startBwSampling();
+  startCamRetryTimer();
+  connectCamStream(camUrlInput.value.trim());
+  if (tickerEnabled) startTicker(); // resume only if the user had it on before pausing
+}
+document.getElementById('wgToggle').onclick = () => setWebGuiEnabled(!webGuiEnabled);
+
 // A bfcache restore or a background tab regaining focus can leave stale
 // data on screen with timers paused/throttled — force an immediate
-// re-check the moment the page is actually looked at again.
-document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshStatus(); });
-window.addEventListener('pageshow', () => { refreshStatus(); refreshClients(); refreshLog(); });
-refreshStatus(); refreshLog(); refreshClients();
+// re-check the moment the page is actually looked at again (only while live).
+document.addEventListener('visibilitychange', () => { if (!document.hidden && webGuiEnabled) refreshStatus(); });
+window.addEventListener('pageshow', () => { if (webGuiEnabled) { refreshStatus(); refreshClients(); refreshLog(); } });
+
+setWebGuiEnabled(true);
 </script></body></html>
 )HTML";

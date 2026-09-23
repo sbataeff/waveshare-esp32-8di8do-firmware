@@ -84,6 +84,19 @@ so that block is normally the only change needed.
   link/switch port), not firmware.
 - **Web UI** (served from the board itself, plain HTML/CSS/JS, no external
   libraries) at `http://<board-ip>/`:
+  - A top-right **ENABLE/DISABLE** master switch. Disabling it stops *all*
+    communication with the ESP32 — every polling timer, the camera stream,
+    the ping test/ticker — so the page can be left open on a phone hotspot
+    without quietly burning data in the background; the page itself
+    dims and becomes non-interactive (`pointer-events: none`) so it's
+    obvious nothing is live. This isn't just "stop polling": the fetch
+    layer (`espFetch()`) refuses to run at all while disabled, and a
+    shared `AbortController` cancels anything already in flight the
+    instant you disable it, not just future requests — verified with a
+    Playwright test asserting zero requests of any kind (including a
+    forced click on an output button) land at the server for the full
+    duration of a pause. Re-enabling resumes everything, including
+    auto-restarting the latency ticker if it was on before you paused.
   - Live ON/OFF indicators for all 8 inputs, styled the same as the output
     buttons (polls every 150ms)
   - Toggle buttons for all 8 outputs, with instant (optimistic) click

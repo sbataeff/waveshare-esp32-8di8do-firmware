@@ -141,6 +141,13 @@ so that block is normally the only change needed.
     Clients) until it completes — that's the embedded server's real
     behavior under load, not a bug, and is itself useful information
     about the link.
+  - A **Latency Trend** panel: every latency-ticker ping (the same 0-byte
+    round trip as the ticker value, one point per 2s while it's enabled)
+    is also plotted as a line chart, last 60 points (~2 min), with a failed
+    ping shown as a gap rather than interpolated over, plus current/average/
+    max stat tiles. Shows an empty-state message until you enable the
+    ticker above; disabling it freezes the chart where it is (history isn't
+    cleared) and re-enabling resumes adding points to the same trend.
   - A **Bandwidth Trend** panel: a small inline-SVG line chart (60s rolling
     window, 1 sample/sec, hover for a crosshair + exact-value tooltip) of
     two series — **ESP32 Interface** (rx+tx to the board itself) and **IP

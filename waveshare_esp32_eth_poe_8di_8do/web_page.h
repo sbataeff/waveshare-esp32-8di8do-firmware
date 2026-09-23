@@ -50,10 +50,14 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
  #bwChart{width:100%;height:140px;display:block}
  .bwCrosshair{stroke:#3a4256;stroke-width:1}
  .bwTooltip{font-family:ui-monospace,Consolas,monospace;font-size:11px}
- .bwStats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px}
- .bwStat{background:#0d1117;border-radius:6px;padding:8px}
- .bwStat .bwStatLabel{color:#93a1b7;font-size:11px;margin-bottom:2px}
- .bwStat .bwStatVal{font-family:ui-monospace,Consolas,monospace;font-size:13px}
+ .statGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px}
+ .statTile{background:#0d1117;border-radius:6px;padding:8px}
+ .statTile .statLabel{color:#93a1b7;font-size:11px;margin-bottom:2px}
+ .statTile .statVal{font-family:ui-monospace,Consolas,monospace;font-size:13px}
+ .latCard{grid-column:1/-1}
+ #latChartWrap{background:#0d1117;border-radius:6px;padding:6px;position:relative}
+ #latChart{width:100%;height:120px;display:block}
+ #latEmpty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#93a1b7;font-size:12px;text-align:center;padding:0 20px}
 </style></head><body>
 <h1>WaveShare ESP32 8DI/8DO Console</h1>
 <div id="connBanner"></div>
@@ -89,16 +93,28 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     </div>
     <div id="pingNote">Round trip = time for the ESP32 to send back the chosen payload. The board serves one request at a time, so other live panels (DI/DO, GUI Clients) may pause while a large test is in flight — that's the embedded server's real behavior under load, not a bug.</div>
   </div>
+  <div class="card latCard"><h2>Latency Trend</h2>
+    <div id="latChartWrap">
+      <svg id="latChart" viewBox="0 0 600 120" preserveAspectRatio="none"></svg>
+      <div id="latEmpty">Enable the live latency ticker above to start recording a trend.</div>
+    </div>
+    <div class="statGrid">
+      <div class="statTile"><div class="statLabel">Current</div><div class="statVal" id="latCur">—</div></div>
+      <div class="statTile"><div class="statLabel">Average (window)</div><div class="statVal" id="latAvg">—</div></div>
+      <div class="statTile"><div class="statLabel">Max / jitter (window)</div><div class="statVal" id="latMax">—</div></div>
+    </div>
+    <div id="pingNote">One point per latency-ticker ping (every 2s while enabled) — a 0-byte round trip, same measurement as the ticker value above. Last 60 points (~2 min). A gap in the line means that ping failed. History is kept when you disable the ticker; new points resume once you re-enable it.</div>
+  </div>
   <div class="card bwCard"><h2>Bandwidth Trend</h2>
     <div class="bwLegend">
       <span class="key"><span class="swatch" style="background:#3987e5"></span>ESP32 Interface</span>
       <span class="key"><span class="swatch" style="background:#d95926"></span>IP Camera Feed</span>
     </div>
     <div id="bwChartWrap"><svg id="bwChart" viewBox="0 0 600 140" preserveAspectRatio="none"></svg></div>
-    <div class="bwStats">
-      <div class="bwStat"><div class="bwStatLabel">ESP32 interface ↓ (download)</div><div class="bwStatVal" id="bwEspRx">0.0 KB/s</div></div>
-      <div class="bwStat"><div class="bwStatLabel">ESP32 interface ↑ (upload)</div><div class="bwStatVal" id="bwEspTx">0.0 KB/s</div></div>
-      <div class="bwStat"><div class="bwStatLabel">Camera feed ↓ (download)</div><div class="bwStatVal" id="bwCamRx">0.0 KB/s</div></div>
+    <div class="statGrid">
+      <div class="statTile"><div class="statLabel">ESP32 interface ↓ (download)</div><div class="statVal" id="bwEspRx">0.0 KB/s</div></div>
+      <div class="statTile"><div class="statLabel">ESP32 interface ↑ (upload)</div><div class="statVal" id="bwEspTx">0.0 KB/s</div></div>
+      <div class="statTile"><div class="statLabel">Camera feed ↓ (download)</div><div class="statVal" id="bwCamRx">0.0 KB/s</div></div>
     </div>
     <div id="pingNote">Measured client-side from actual bytes transferred (response Content-Length for the ESP32 interface; real bytes read from the camera's MJPEG stream) — not a synthetic estimate. Includes ~200B/request assumed HTTP header overhead per direction since the browser can't see raw TCP/HTTP framing. 60s rolling window, 1 sample/sec.</div>
   </div>
@@ -450,18 +466,28 @@ document.getElementById('pingRunBtn').onclick = async () => {
 
 // Latency ticker: a separate, toggle-able lightweight 0-byte round trip
 // every 2s, off by default so it costs no data unless explicitly enabled.
+// Each successful (or failed) ping is also recorded into latencyHistory
+// for the Latency Trend chart below — same measurement, just plotted.
 let tickerEnabled = false;
 let tickerTimer = null;
+const LAT_HISTORY_LEN = 60; // ~2 min at one point per 2s tick
+let latencyHistory = []; // ms, or null for a failed ping (shows as a gap)
+
 async function tickerOnce(){
   const val = document.getElementById('pingTickerVal');
+  let ms = null;
   try {
-    const { ms } = await runPingOnce(0);
+    const r = await runPingOnce(0);
+    ms = r.ms;
     val.textContent = ms.toFixed(0) + 'ms';
     val.className = 'ind on';
   } catch (e) {
     val.textContent = 'ERR';
     val.className = 'ind';
   }
+  latencyHistory.push(ms);
+  if (latencyHistory.length > LAT_HISTORY_LEN) latencyHistory.shift();
+  drawLatencyChart();
 }
 document.getElementById('pingTickerToggle').onclick = () => {
   tickerEnabled = !tickerEnabled;
@@ -476,6 +502,50 @@ document.getElementById('pingTickerToggle').onclick = () => {
     val.className = 'ind';
   }
 };
+
+function drawLatencyChart(){
+  const svg = document.getElementById('latChart');
+  const empty = document.getElementById('latEmpty');
+  svg.textContent = '';
+  const samples = latencyHistory.filter(v => v !== null);
+  document.getElementById('latCur').textContent = samples.length ? samples[samples.length - 1].toFixed(0) + 'ms' : '—';
+  document.getElementById('latAvg').textContent = samples.length ? (samples.reduce((a,b)=>a+b,0) / samples.length).toFixed(0) + 'ms' : '—';
+  document.getElementById('latMax').textContent = samples.length ? Math.max(...samples).toFixed(0) + 'ms' : '—';
+
+  if (samples.length === 0) { empty.style.display = 'flex'; return; }
+  empty.style.display = 'none';
+
+  const W = 600, H = 120, padL = 34, padT = 10, padB = 8, padR = 8;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const niceMax = Math.max(10, Math.ceil(Math.max(...samples) / 10) * 10);
+
+  for (let i = 0; i <= 2; i++){
+    const frac = i / 2;
+    const y = padT + plotH * (1 - frac);
+    svg.appendChild(svgEl('line', { x1:padL, x2:W-padR, y1:y, y2:y, stroke:'#232a36', 'stroke-width':1 }));
+    const t = svgEl('text', { x:padL-6, y:y+3, 'text-anchor':'end', fill:'#93a1b7', 'font-size':9, 'font-family':'ui-monospace,Consolas,monospace' });
+    t.textContent = Math.round(niceMax * frac);
+    svg.appendChild(t);
+  }
+
+  function xFor(i){ return padL + plotW * (i / (LAT_HISTORY_LEN - 1)); }
+  function yFor(v){ return padT + plotH * (1 - Math.min(v, niceMax) / niceMax); }
+
+  // Break the line at nulls (failed pings) instead of interpolating over them.
+  let d = '', drawing = false, lastX = 0, lastY = 0, lastV = 0;
+  latencyHistory.forEach((v, i) => {
+    if (v === null) { drawing = false; return; }
+    const x = xFor(i), y = yFor(v);
+    d += (drawing ? 'L' : 'M') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+    drawing = true;
+    lastX = x; lastY = y; lastV = v;
+  });
+  svg.appendChild(svgEl('path', { d, fill: 'none', stroke: '#3987e5', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+  svg.appendChild(svgEl('circle', { cx: lastX, cy: lastY, r: 4, fill: '#3987e5', stroke: '#0d1117', 'stroke-width': 2 }));
+  const lbl = svgEl('text', { x: lastX + 7, y: lastY + 3, fill: '#93a1b7', 'font-size': 10, 'font-family': 'ui-monospace,Consolas,monospace' });
+  lbl.textContent = lastV.toFixed(0) + 'ms';
+  svg.appendChild(lbl);
+}
 
 // Bandwidth trend: samples the espRxBytes/espTxBytes/camRxBytes counters
 // (already accumulated for free by espFetch and the camera stream reader

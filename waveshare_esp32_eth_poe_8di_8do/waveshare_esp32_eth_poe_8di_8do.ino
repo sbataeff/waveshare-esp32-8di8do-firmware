@@ -76,6 +76,7 @@
 #define PCA9554_ADDR   0x20 // TCA9554PWR default address (A0-A2 tied low)
 
 // Digital inputs DI1..DI8 (direct GPIO, internal pull-up enabled).
+static const uint8_t DI_PINS[8] = {4, 5, 6, 7, 8, 9, 10, 11};
 // Confirmed active-LOW (an energized input reads GPIO LOW) by a serial CLI
 // sketch the user has actually run and verified working on this exact
 // board — the strongest evidence available for this field, overriding the

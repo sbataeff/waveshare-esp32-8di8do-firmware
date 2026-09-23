@@ -1,0 +1,10 @@
+# Arduino IDE / arduino-cli build artifacts
+build/
+*.bin
+*.elf
+*.map
+*.hex
+
+# Editor/OS cruft
+.DS_Store
+Thumbs.db

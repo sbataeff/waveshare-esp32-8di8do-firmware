@@ -65,7 +65,8 @@ so that block is normally the only change needed.
   monitor.
 - **Web UI** (served from the board itself, plain HTML/CSS/JS, no external
   libraries) at `http://<board-ip>/`:
-  - Live status of all 8 inputs (polls every 250ms)
+  - Live ON/OFF indicators for all 8 inputs, styled the same as the output
+    buttons (polls every 250ms)
   - Toggle buttons for all 8 outputs
   - A "Device / Connected client" panel showing the board's hostname,
     Ethernet link state, DHCP IP, MAC, uptime, free heap, and the

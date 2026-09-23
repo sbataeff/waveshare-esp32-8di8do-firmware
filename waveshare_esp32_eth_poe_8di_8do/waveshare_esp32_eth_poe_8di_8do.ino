@@ -279,11 +279,11 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#93a1b7;margin:0 0 10px}
  .chRow{display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid #232a36}
  .chRow:last-child{border-bottom:none}
- .dot{width:12px;height:12px;border-radius:50%;background:#3a4256;display:inline-block;margin-right:8px}
- .dot.on{background:#3ddc84;box-shadow:0 0 6px #3ddc84}
  .lbl{font-family:ui-monospace,Consolas,monospace;font-size:13px}
- button{background:#2a3140;color:#e6e6e6;border:1px solid #3a4256;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px}
- button.on{background:#245c3d;border-color:#3ddc84}
+ button,.ind{background:#2a3140;color:#e6e6e6;border:1px solid #3a4256;border-radius:6px;padding:6px 12px;font-size:12px;font-family:ui-monospace,Consolas,monospace;display:inline-block;min-width:38px;text-align:center}
+ button{cursor:pointer}
+ .ind{cursor:default;user-select:none}
+ button.on,.ind.on{background:#245c3d;border-color:#3ddc84;color:#3ddc84}
  #log{font-family:ui-monospace,Consolas,monospace;font-size:11px;white-space:pre-wrap;max-height:220px;overflow-y:auto;background:#0d1117;border-radius:6px;padding:8px}
  .kv{display:flex;justify-content:space-between;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:3px 0}
  .kv span:first-child{color:#93a1b7}
@@ -305,8 +305,9 @@ async function refreshStatus(){
     const di = document.getElementById('diList'); di.innerHTML='';
     d.di.forEach((v,i)=>{
       const row=document.createElement('div'); row.className='chRow';
-      row.innerHTML=`<span class="lbl"><span class="dot ${v?'on':''}"></span>DI${i+1}</span><span class="lbl">${v?'ACTIVE':'inactive'}</span>`;
-      di.appendChild(row);
+      const lbl=document.createElement('span'); lbl.className='lbl'; lbl.textContent='DI'+(i+1);
+      const ind=document.createElement('span'); ind.textContent=v?'ON':'OFF'; ind.className='ind'+(v?' on':'');
+      row.appendChild(lbl); row.appendChild(ind); di.appendChild(row);
     });
     const doL = document.getElementById('doList'); doL.innerHTML='';
     d.do.forEach((v,i)=>{

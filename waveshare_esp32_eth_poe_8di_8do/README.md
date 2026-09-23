@@ -139,7 +139,14 @@ so that block is normally the only change needed.
    over the native USB port.
 4. No extra libraries to install — only built-in `ETH`, `WebServer`, `Wire`,
    `SPI`.
-5. Flash, open the Serial Monitor at 115200 baud, type `help`.
+5. Keep `web_page.h` in the same folder as the `.ino` — Arduino IDE compiles
+   the whole sketch folder together automatically, so no extra step is
+   needed, just don't delete or rename it. (It's split out from the `.ino`
+   specifically because Arduino's function-prototype auto-generator doesn't
+   understand C++ raw string literals and misreads JavaScript inside one
+   sitting directly in a `.ino` file as broken C++; `.h` files aren't
+   scanned by that step.)
+6. Flash, open the Serial Monitor at 115200 baud, type `help`.
 
 ## Notes / assumptions
 

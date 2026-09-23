@@ -117,6 +117,21 @@ so that block is normally the only change needed.
     address. Default is set to `http://100.69.34.95:8080/video`; that's a
     Tailscale/CGNAT-range address (100.64.0.0/10), so it will only load for
     browsers that can also reach that network.
+  - A **Connection Speed Test** panel: pick a payload size (presets from
+    1 B to 1 MB, or a custom byte count) and hit Run Test to fetch
+    `/api/ping?size=N` — the ESP32 streams back exactly N bytes (chunked,
+    so it never buffers more than 512 bytes at a time regardless of size)
+    and the browser times the full round trip, reporting elapsed ms,
+    KB/s, and Mbps. Useful for characterizing a link like phone-hotspot →
+    USB-C Ethernet → ESP32. A separate **live latency ticker** (off by
+    default, toggleable) does a 0-byte round trip every 2s to show the
+    server is actively responding, without the data cost of the full
+    payload test — this is what "toggle on/off to save data usage" gets
+    you. Note: the ESP32's web server handles one request at a time, so a
+    large test in flight can visibly pause other panels (DI/DO, GUI
+    Clients) until it completes — that's the embedded server's real
+    behavior under load, not a bug, and is itself useful information
+    about the link.
   - A scrolling Status/Debug log panel (device-side ring buffer, last 30
     events: input changes, output changes, Ethernet link events, GUI
     client connect/reconnect/stale events, heartbeats)

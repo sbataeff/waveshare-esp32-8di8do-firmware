@@ -38,6 +38,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
  #camWrap{position:relative;background:#0d1117;border-radius:6px;min-height:120px;display:flex;align-items:center;justify-content:center;overflow:hidden}
  #camImg{max-width:100%;display:block}
  #camError{display:none;color:#e0776d;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:16px;text-align:center}
+ .camRow select{background:#0d1117;color:#e6e6e6;border:1px solid #3a4256;border-radius:6px;padding:6px 8px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+ .camRow input[type=number]{flex:0 0 130px}
+ #pingResult{font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:8px;background:#0d1117;border-radius:6px;margin-bottom:8px}
+ #pingNote{font-size:11px;color:#93a1b7;margin-top:8px;line-height:1.4}
 </style></head><body>
 <h1>WaveShare ESP32 8DI/8DO Console</h1>
 <div id="connBanner"></div>
@@ -56,6 +60,22 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       <img id="camImg" alt="camera feed">
       <div id="camError">No camera feed — set the IP Webcam URL above and make sure the app is running and reachable from this browser.</div>
     </div>
+  </div>
+  <div class="card"><h2>Connection Speed Test</h2>
+    <div class="camRow">
+      <select id="pingSizeSelect"></select>
+      <input id="pingCustomSize" type="number" min="1" max="1048576" placeholder="bytes (1-1048576)" style="display:none">
+      <button id="pingRunBtn">Run Test</button>
+    </div>
+    <div id="pingResult">No test run yet.</div>
+    <div class="chRow">
+      <span class="lbl">Live latency ticker (every 2s)</span>
+      <span style="display:flex;gap:8px;align-items:center">
+        <span id="pingTickerVal" class="ind">OFF</span>
+        <button id="pingTickerToggle">Enable</button>
+      </span>
+    </div>
+    <div id="pingNote">Round trip = time for the ESP32 to send back the chosen payload. The board serves one request at a time, so other live panels (DI/DO, GUI Clients) may pause while a large test is in flight — that's the embedded server's real behavior under load, not a bug.</div>
   </div>
   <div class="card"><h2>Status / Debug Log</h2><div id="log"></div></div>
 </div>
@@ -238,6 +258,91 @@ document.getElementById('camRetryBtn').onclick = () => { camConnected = false; l
 setInterval(() => {
   if (!camConnected) loadCamUrl(camUrlInput.value.trim());
 }, 1000);
+
+// Connection speed test: fetches /api/ping?size=N (the board streams back
+// exactly N bytes) and times the full round trip client-side. Payload is
+// user-chosen, 1 byte to 1 MiB, via presets or a custom entry.
+const PING_SIZES = [
+  ['1 B', 1], ['64 B', 64], ['256 B', 256], ['1 KB', 1024], ['4 KB', 4096],
+  ['16 KB', 16384], ['64 KB', 65536], ['256 KB', 262144], ['1 MB', 1048576],
+];
+const pingSizeSelect = document.getElementById('pingSizeSelect');
+PING_SIZES.forEach(([label, val]) => {
+  const opt = document.createElement('option'); opt.value = val; opt.textContent = label;
+  pingSizeSelect.appendChild(opt);
+});
+const customOpt = document.createElement('option'); customOpt.value = 'custom'; customOpt.textContent = 'Custom…';
+pingSizeSelect.appendChild(customOpt);
+pingSizeSelect.value = '1024';
+
+const pingCustomSize = document.getElementById('pingCustomSize');
+pingSizeSelect.onchange = () => {
+  pingCustomSize.style.display = pingSizeSelect.value === 'custom' ? 'inline-block' : 'none';
+};
+
+function formatBytes(n){
+  if (n >= 1048576) return (n/1048576).toFixed(2) + 'MB';
+  if (n >= 1024) return (n/1024).toFixed(1) + 'KB';
+  return n + 'B';
+}
+function currentPingSize(){
+  if (pingSizeSelect.value === 'custom') {
+    let n = parseInt(pingCustomSize.value, 10);
+    if (!Number.isFinite(n) || n < 1) n = 1;
+    if (n > 1048576) n = 1048576;
+    return n;
+  }
+  return parseInt(pingSizeSelect.value, 10);
+}
+async function runPingOnce(size){
+  const t0 = performance.now();
+  const r = await fetch('/api/ping?size=' + size + '&_=' + Date.now());
+  const buf = await r.arrayBuffer();
+  const ms = performance.now() - t0;
+  return { bytes: buf.byteLength, ms };
+}
+document.getElementById('pingRunBtn').onclick = async () => {
+  const size = currentPingSize();
+  const resultEl = document.getElementById('pingResult');
+  resultEl.textContent = 'Testing ' + formatBytes(size) + '...';
+  try {
+    const { bytes, ms } = await runPingOnce(size);
+    const kbps = ms > 0 ? (bytes / 1024) / (ms / 1000) : 0;
+    resultEl.textContent = formatBytes(bytes) + ' round trip in ' + ms.toFixed(1) + 'ms  (' +
+      kbps.toFixed(1) + ' KB/s, ' + (kbps * 8 / 1024).toFixed(2) + ' Mbps)';
+  } catch (e) {
+    resultEl.textContent = 'Test failed: ' + e;
+  }
+};
+
+// Latency ticker: a separate, toggle-able lightweight 0-byte round trip
+// every 2s, off by default so it costs no data unless explicitly enabled.
+let tickerEnabled = false;
+let tickerTimer = null;
+async function tickerOnce(){
+  const val = document.getElementById('pingTickerVal');
+  try {
+    const { ms } = await runPingOnce(0);
+    val.textContent = ms.toFixed(0) + 'ms';
+    val.className = 'ind on';
+  } catch (e) {
+    val.textContent = 'ERR';
+    val.className = 'ind';
+  }
+}
+document.getElementById('pingTickerToggle').onclick = () => {
+  tickerEnabled = !tickerEnabled;
+  document.getElementById('pingTickerToggle').textContent = tickerEnabled ? 'Disable' : 'Enable';
+  if (tickerEnabled) {
+    tickerOnce();
+    tickerTimer = setInterval(tickerOnce, 2000);
+  } else {
+    clearInterval(tickerTimer);
+    const val = document.getElementById('pingTickerVal');
+    val.textContent = 'OFF';
+    val.className = 'ind';
+  }
+};
 
 buildRows();
 setInterval(refreshStatus, 150);

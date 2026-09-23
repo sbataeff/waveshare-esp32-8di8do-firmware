@@ -430,6 +430,39 @@ static void handleApiClients() {
   server.send(200, "application/json", json);
 }
 
+// Round-trip / throughput test: streams back exactly `size` bytes
+// (?size=N, 0..1MiB) so the browser can time a full request/response
+// cycle for a payload it chooses. Streamed in fixed-size chunks via
+// sendContent() rather than built up in one buffer, so a 1MiB request
+// never needs a 1MiB RAM allocation. Also reused at size=0 by the web
+// UI's lightweight latency ticker.
+#define PING_MAX_BYTES (1024L * 1024L)
+#define PING_CHUNK_BYTES 512
+
+static void handleApiPing() {
+  captureClientInfo();
+  long size = 0;
+  if (server.hasArg("size")) size = server.arg("size").toInt();
+  if (size < 0) size = 0;
+  if (size > PING_MAX_BYTES) size = PING_MAX_BYTES;
+
+  static uint8_t fillBuf[PING_CHUNK_BYTES];
+  static bool fillInit = false;
+  if (!fillInit) {
+    memset(fillBuf, 'P', sizeof(fillBuf));
+    fillInit = true;
+  }
+
+  server.setContentLength(size);
+  server.send(200, "application/octet-stream", "");
+  long remaining = size;
+  while (remaining > 0) {
+    size_t n = remaining < (long)PING_CHUNK_BYTES ? (size_t)remaining : PING_CHUNK_BYTES;
+    server.sendContent((const char *)fillBuf, n);
+    remaining -= n;
+  }
+}
+
 static void handleApiOutput() {
   captureClientInfo();
   if (!server.hasArg("ch") || !server.hasArg("state")) {
@@ -450,6 +483,7 @@ static void webInit() {
   server.on("/api/status", HTTP_GET, handleApiStatus);
   server.on("/api/log", HTTP_GET, handleApiLog);
   server.on("/api/clients", HTTP_GET, handleApiClients);
+  server.on("/api/ping", HTTP_GET, handleApiPing);
   server.on("/api/output", HTTP_POST, handleApiOutput);
   server.begin();
 }

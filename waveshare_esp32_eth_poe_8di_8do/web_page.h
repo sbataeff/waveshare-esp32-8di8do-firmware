@@ -42,6 +42,18 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
  .camRow input[type=number]{flex:0 0 130px}
  #pingResult{font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:8px;background:#0d1117;border-radius:6px;margin-bottom:8px}
  #pingNote{font-size:11px;color:#93a1b7;margin-top:8px;line-height:1.4}
+ .bwCard{grid-column:1/-1}
+ .bwLegend{display:flex;gap:18px;margin-bottom:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+ .bwLegend .key{display:inline-flex;align-items:center;gap:6px}
+ .bwLegend .swatch{width:14px;height:2px;display:inline-block}
+ #bwChartWrap{background:#0d1117;border-radius:6px;padding:6px}
+ #bwChart{width:100%;height:140px;display:block}
+ .bwCrosshair{stroke:#3a4256;stroke-width:1}
+ .bwTooltip{font-family:ui-monospace,Consolas,monospace;font-size:11px}
+ .bwStats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px}
+ .bwStat{background:#0d1117;border-radius:6px;padding:8px}
+ .bwStat .bwStatLabel{color:#93a1b7;font-size:11px;margin-bottom:2px}
+ .bwStat .bwStatVal{font-family:ui-monospace,Consolas,monospace;font-size:13px}
 </style></head><body>
 <h1>WaveShare ESP32 8DI/8DO Console</h1>
 <div id="connBanner"></div>
@@ -77,6 +89,19 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     </div>
     <div id="pingNote">Round trip = time for the ESP32 to send back the chosen payload. The board serves one request at a time, so other live panels (DI/DO, GUI Clients) may pause while a large test is in flight — that's the embedded server's real behavior under load, not a bug.</div>
   </div>
+  <div class="card bwCard"><h2>Bandwidth Trend</h2>
+    <div class="bwLegend">
+      <span class="key"><span class="swatch" style="background:#3987e5"></span>ESP32 Interface</span>
+      <span class="key"><span class="swatch" style="background:#d95926"></span>IP Camera Feed</span>
+    </div>
+    <div id="bwChartWrap"><svg id="bwChart" viewBox="0 0 600 140" preserveAspectRatio="none"></svg></div>
+    <div class="bwStats">
+      <div class="bwStat"><div class="bwStatLabel">ESP32 interface ↓ (download)</div><div class="bwStatVal" id="bwEspRx">0.0 KB/s</div></div>
+      <div class="bwStat"><div class="bwStatLabel">ESP32 interface ↑ (upload)</div><div class="bwStatVal" id="bwEspTx">0.0 KB/s</div></div>
+      <div class="bwStat"><div class="bwStatLabel">Camera feed ↓ (download)</div><div class="bwStatVal" id="bwCamRx">0.0 KB/s</div></div>
+    </div>
+    <div id="pingNote">Measured client-side from actual bytes transferred (response Content-Length for the ESP32 interface; real bytes read from the camera's MJPEG stream) — not a synthetic estimate. Includes ~200B/request assumed HTTP header overhead per direction since the browser can't see raw TCP/HTTP framing. 60s rolling window, 1 sample/sec.</div>
+  </div>
   <div class="card"><h2>Status / Debug Log</h2><div id="log"></div></div>
 </div>
 <script>
@@ -111,7 +136,7 @@ function buildRows(){
       applyDoState(i, next);
       doOverride[i] = true;
       doOverrideUntil[i] = Date.now() + 1500;
-      fetch('/api/output', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      espFetch('/api/output', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
         body:'ch='+ch+'&state='+(next?'on':'off')})
         .catch(()=>{ doOverride[i]=false; applyDoState(i, !next); });
     };
@@ -143,12 +168,31 @@ function updateConnBanner(){
   }
 }
 
+// Bandwidth accounting for the ESP32 web interface. Accumulates real
+// transferred bytes (response Content-Length; request body length for
+// POSTs) between 1s bandwidth-chart samples, plus a rough fixed overhead
+// estimate per direction since the browser can't see raw HTTP/TCP framing.
+const HTTP_OVERHEAD_EST_BYTES = 200;
+let espRxBytes = 0, espTxBytes = 0;
+async function espFetch(url, opts){
+  const body = opts && opts.body;
+  espTxBytes += (typeof body === 'string' ? body.length : 0) + HTTP_OVERHEAD_EST_BYTES;
+  const r = await fetch(url, opts);
+  const cl = r.headers.get('content-length');
+  if (cl !== null) {
+    espRxBytes += parseInt(cl, 10) + HTTP_OVERHEAD_EST_BYTES;
+  } else {
+    r.clone().arrayBuffer().then(buf => { espRxBytes += buf.byteLength + HTTP_OVERHEAD_EST_BYTES; }).catch(()=>{});
+  }
+  return r;
+}
+
 let statusInflight = false;
 async function refreshStatus(){
   if (statusInflight) return; // don't let requests queue up on the device
   statusInflight = true;
   try{
-    const r = await fetch('/api/status'); const d = await r.json();
+    const r = await espFetch('/api/status'); const d = await r.json();
     lastGoodPollMs = Date.now();
     window.__myIp = d.client_ip;
     const now = Date.now();
@@ -180,7 +224,7 @@ async function refreshLog(){
   if (logInflight) return;
   logInflight = true;
   try{
-    const r = await fetch('/api/log'); const d = await r.json();
+    const r = await espFetch('/api/log'); const d = await r.json();
     document.getElementById('log').textContent = d.lines.join('\n');
   }catch(e){}
   finally{ logInflight = false; }
@@ -190,7 +234,7 @@ async function refreshClients(){
   if (clientsInflight) return;
   clientsInflight = true;
   try{
-    const r = await fetch('/api/clients'); const d = await r.json();
+    const r = await espFetch('/api/clients'); const d = await r.json();
     const el = document.getElementById('clientsList');
     el.innerHTML = '';
     if (d.clients.length === 0) {
@@ -213,50 +257,139 @@ async function refreshClients(){
 // connects to the camera directly, so it only works if this browser can
 // reach that address on your network. The URL is remembered per-browser
 // (localStorage), not stored on the device.
+//
+// Fetched (not <img src>) and parsed by hand as multipart/x-mixed-replace
+// so real bytes-received can be counted for the bandwidth chart — a plain
+// <img> tag never exposes byte-level progress for an open MJPEG connection,
+// so that's the only way to get real numbers instead of a chart that reads
+// zero the whole time the camera is actually streaming fine.
 const CAM_DEFAULT_URL = 'http://100.69.34.95:8080/video';
 const camImg = document.getElementById('camImg');
 const camError = document.getElementById('camError');
 const camUrlInput = document.getElementById('camUrlInput');
 
-// camConnected tracks whether the feed is actually up. The <img> load
-// attempt IS the "is it active" test — no separate ping needed. While
-// disconnected, a 1s timer keeps retrying; once connected, retries stop so
-// a healthy stream isn't interrupted, and an error later flips it back to
-// disconnected so retries resume automatically.
-let camConnected = false;
+let camConnected = false;      // at least one frame currently on screen
+let camAttemptInFlight = false; // a connect attempt is already running — don't stack another
+let camStreamGeneration = 0;    // bumped on every (re)connect so a superseded attempt's
+                                 // cleanup can't stomp a newer one's state
+let camAbortController = null;
+let camRxBytes = 0; // accumulated since the last 1s bandwidth sample
 
-function loadCamUrl(url){
-  if (!url) return;
-  // Cache-bust so each attempt opens a fresh connection instead of the
-  // browser treating it as the same (possibly dead) resource.
-  camImg.src = url + (url.includes('?') ? '&' : '?') + '_=' + Date.now();
+function indexOfBytes(buf, pattern, from){
+  const limit = buf.length - pattern.length;
+  outer:
+  for (let i = from; i <= limit; i++){
+    for (let j = 0; j < pattern.length; j++){
+      if (buf[i+j] !== pattern[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
 }
-camImg.onload = () => {
-  camConnected = true;
-  camError.style.display = 'none';
-  camImg.style.display = 'block';
-};
-camImg.onerror = () => {
-  camConnected = false;
-  camImg.style.display = 'none';
-  camError.style.display = 'block';
-};
+
+async function connectCamStream(url){
+  if (!url) return;
+  camStreamGeneration++;
+  const myGen = camStreamGeneration;
+  if (camAbortController) camAbortController.abort();
+  const controller = new AbortController();
+  camAbortController = controller;
+  camAttemptInFlight = true;
+
+  try {
+    const resp = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+    if (myGen !== camStreamGeneration) return; // superseded while awaiting the response
+    if (!resp.ok || !resp.body) throw new Error('HTTP ' + resp.status);
+    const ct = resp.headers.get('content-type') || '';
+    const bm = ct.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+    if (!bm) throw new Error('not a multipart MJPEG response (Content-Type: ' + ct + ')');
+    const boundaryBytes = new TextEncoder().encode('--' + (bm[1] || bm[2]).trim());
+    const dblCrlf = new TextEncoder().encode('\r\n\r\n');
+
+    const reader = resp.body.getReader();
+    let buf = new Uint8Array(0);
+    let lastObjectUrl = null;
+
+    while (myGen === camStreamGeneration) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      camRxBytes += value.byteLength;
+
+      const merged = new Uint8Array(buf.length + value.length);
+      merged.set(buf, 0); merged.set(value, buf.length);
+      buf = merged;
+
+      // Pull out as many complete frames as have already arrived.
+      for (;;) {
+        const bIdx = indexOfBytes(buf, boundaryBytes, 0);
+        if (bIdx === -1) {
+          if (buf.length > 5 * 1024 * 1024) throw new Error('no MJPEG boundary found in stream, giving up');
+          break;
+        }
+        const headerStart = bIdx + boundaryBytes.length;
+        const hdrEnd = indexOfBytes(buf, dblCrlf, headerStart);
+        if (hdrEnd === -1) break; // part header hasn't fully arrived yet
+
+        const headerText = new TextDecoder().decode(buf.subarray(headerStart, hdrEnd));
+        const clMatch = headerText.match(/content-length:\s*(\d+)/i);
+        const frameStart = hdrEnd + dblCrlf.length;
+
+        let frameEnd, advanceTo;
+        if (clMatch) {
+          const len = parseInt(clMatch[1], 10);
+          if (buf.length < frameStart + len) break; // frame body not fully arrived yet
+          frameEnd = frameStart + len;
+          advanceTo = frameEnd;
+        } else {
+          // No Content-Length in this part: fall back to "next boundary ends this frame".
+          const nextB = indexOfBytes(buf, boundaryBytes, frameStart);
+          if (nextB === -1) break;
+          frameEnd = nextB;
+          advanceTo = nextB;
+        }
+
+        const frameBytes = buf.subarray(frameStart, frameEnd);
+        if (frameBytes.length > 0) {
+          const objUrl = URL.createObjectURL(new Blob([frameBytes], { type: 'image/jpeg' }));
+          camImg.src = objUrl;
+          if (lastObjectUrl) URL.revokeObjectURL(lastObjectUrl);
+          lastObjectUrl = objUrl;
+          camConnected = true;
+          camError.style.display = 'none';
+          camImg.style.display = 'block';
+        }
+        buf = buf.subarray(advanceTo);
+      }
+    }
+  } catch (e) {
+    // Falls through to the state reset below.
+  } finally {
+    if (myGen === camStreamGeneration) {
+      camAttemptInFlight = false;
+      camConnected = false;
+      camImg.style.display = 'none';
+      camError.style.display = 'block';
+    }
+  }
+}
 
 let savedCamUrl;
 try { savedCamUrl = localStorage.getItem('camUrl'); } catch(e) {}
 camUrlInput.value = savedCamUrl || CAM_DEFAULT_URL;
-loadCamUrl(camUrlInput.value);
+connectCamStream(camUrlInput.value);
 
 document.getElementById('camSetBtn').onclick = () => {
   const url = camUrlInput.value.trim();
   try { localStorage.setItem('camUrl', url); } catch(e) {}
-  camConnected = false;
-  loadCamUrl(url);
+  connectCamStream(url);
 };
-document.getElementById('camRetryBtn').onclick = () => { camConnected = false; loadCamUrl(camUrlInput.value.trim()); };
-// Auto-reconnect: every 1s, if not currently connected, try again.
+document.getElementById('camRetryBtn').onclick = () => connectCamStream(camUrlInput.value.trim());
+// Auto-reconnect: every 1s, if not currently connected (and no attempt is
+// already in flight — a slow initial connect shouldn't get restarted every
+// second before it even has a chance to finish), try again. This IS the
+// "is the camera active" test: the connect attempt itself is the probe.
 setInterval(() => {
-  if (!camConnected) loadCamUrl(camUrlInput.value.trim());
+  if (!camConnected && !camAttemptInFlight) connectCamStream(camUrlInput.value.trim());
 }, 1000);
 
 // Connection speed test: fetches /api/ping?size=N (the board streams back
@@ -296,7 +429,7 @@ function currentPingSize(){
 }
 async function runPingOnce(size){
   const t0 = performance.now();
-  const r = await fetch('/api/ping?size=' + size + '&_=' + Date.now());
+  const r = await espFetch('/api/ping?size=' + size + '&_=' + Date.now());
   const buf = await r.arrayBuffer();
   const ms = performance.now() - t0;
   return { bytes: buf.byteLength, ms };
@@ -343,6 +476,119 @@ document.getElementById('pingTickerToggle').onclick = () => {
     val.className = 'ind';
   }
 };
+
+// Bandwidth trend: samples the espRxBytes/espTxBytes/camRxBytes counters
+// (already accumulated for free by espFetch and the camera stream reader
+// above — this adds no extra network traffic of its own) once a second
+// into a 60-sample rolling window, and draws it as a small inline-SVG line
+// chart. Two series: ESP32 web interface (rx+tx combined) and camera feed
+// (rx only — a video pull has no meaningful upload). Colors are the
+// project's validated dark-mode categorical slots 1 & 2 (blue/orange).
+const BW_HISTORY_LEN = 60;
+const BW_SVG_NS = 'http://www.w3.org/2000/svg';
+let bwHistory = [];
+let bwPlotMeta = null; // set by drawBandwidthChart(), read by the hover handler
+
+function svgEl(tag, attrs){
+  const el = document.createElementNS(BW_SVG_NS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+
+function sampleBandwidth(){
+  const espRxKBps = espRxBytes / 1024, espTxKBps = espTxBytes / 1024, camRxKBps = camRxBytes / 1024;
+  bwHistory.push({ espRx: espRxKBps, espTx: espTxKBps, camRx: camRxKBps });
+  if (bwHistory.length > BW_HISTORY_LEN) bwHistory.shift();
+  espRxBytes = 0; espTxBytes = 0; camRxBytes = 0;
+
+  document.getElementById('bwEspRx').textContent = espRxKBps.toFixed(2) + ' KB/s';
+  document.getElementById('bwEspTx').textContent = espTxKBps.toFixed(2) + ' KB/s';
+  document.getElementById('bwCamRx').textContent = camRxKBps.toFixed(2) + ' KB/s';
+  drawBandwidthChart();
+}
+
+function drawBandwidthChart(){
+  const svg = document.getElementById('bwChart');
+  svg.textContent = ''; // full rebuild each tick; the hover overlay and its listeners are recreated below too
+  const W = 600, H = 140, padL = 34, padT = 10, padB = 8, padR = 46;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  const espSeries = bwHistory.map(s => s.espRx + s.espTx);
+  const camSeries = bwHistory.map(s => s.camRx);
+  const maxVal = Math.max(1, ...espSeries, ...camSeries);
+  const niceMax = Math.max(1, Math.ceil(maxVal / 5) * 5);
+  bwPlotMeta = { padL, padT, plotW, plotH, niceMax };
+
+  for (let i = 0; i <= 2; i++){
+    const frac = i / 2;
+    const y = padT + plotH * (1 - frac);
+    svg.appendChild(svgEl('line', { x1:padL, x2:W-padR, y1:y, y2:y, stroke:'#232a36', 'stroke-width':1 }));
+    const t = svgEl('text', { x:padL-6, y:y+3, 'text-anchor':'end', fill:'#93a1b7', 'font-size':9, 'font-family':'ui-monospace,Consolas,monospace' });
+    t.textContent = Math.round(niceMax * frac);
+    svg.appendChild(t);
+  }
+
+  function xFor(i){ return padL + plotW * (i / (BW_HISTORY_LEN - 1)); }
+  function yFor(v){ return padT + plotH * (1 - Math.min(v, niceMax) / niceMax); }
+
+  function drawSeries(series, color){
+    if (series.length === 0) return;
+    let lineD = '', areaD = '';
+    series.forEach((v, i) => {
+      const x = xFor(i), y = yFor(v);
+      lineD += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1) + ' ';
+    });
+    if (series.length > 1) {
+      const firstX = xFor(0), lastX = xFor(series.length - 1), baseY = padT + plotH;
+      areaD = lineD + 'L' + lastX.toFixed(1) + ',' + baseY + ' L' + firstX.toFixed(1) + ',' + baseY + ' Z';
+      svg.appendChild(svgEl('path', { d: areaD, fill: color, 'fill-opacity': 0.1, stroke: 'none' }));
+    }
+    svg.appendChild(svgEl('path', { d: lineD, fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
+    const lastI = series.length - 1, lx = xFor(lastI), ly = yFor(series[lastI]);
+    svg.appendChild(svgEl('circle', { cx: lx, cy: ly, r: 4, fill: color, stroke: '#0d1117', 'stroke-width': 2 }));
+    const lbl = svgEl('text', { x: lx + 7, y: ly + 3, fill: '#93a1b7', 'font-size': 10, 'font-family': 'ui-monospace,Consolas,monospace' });
+    lbl.textContent = series[lastI].toFixed(1) + 'K';
+    svg.appendChild(lbl);
+  }
+  drawSeries(espSeries, '#3987e5');
+  drawSeries(camSeries, '#d95926');
+
+  // Hover crosshair + tooltip (built fresh each redraw, matches current data).
+  const hoverGroup = svgEl('g', { style: 'display:none' });
+  const crossLine = svgEl('line', { class: 'bwCrosshair', y1: padT, y2: padT + plotH });
+  const tipBg = svgEl('rect', { rx: 4, fill: '#1b212b', stroke: '#3a4256', 'stroke-width': 1 });
+  const tipEsp = svgEl('text', { class: 'bwTooltip', fill: '#3987e5', x: 6, y: 14 });
+  const tipCam = svgEl('text', { class: 'bwTooltip', fill: '#d95926', x: 6, y: 28 });
+  const tipG = svgEl('g');
+  tipG.appendChild(tipBg); tipG.appendChild(tipEsp); tipG.appendChild(tipCam);
+  hoverGroup.appendChild(crossLine); hoverGroup.appendChild(tipG);
+  svg.appendChild(hoverGroup);
+  const overlay = svgEl('rect', { x: padL, y: padT, width: plotW, height: plotH, fill: 'transparent' });
+  svg.appendChild(overlay);
+
+  overlay.onpointermove = (ev) => {
+    if (!bwPlotMeta || bwHistory.length === 0) return;
+    const rect = svg.getBoundingClientRect();
+    const scaleX = W / rect.width;
+    const svgX = (ev.clientX - rect.left) * scaleX;
+    const frac = (svgX - padL) / plotW;
+    const idx = Math.max(0, Math.min(bwHistory.length - 1, Math.round(frac * (BW_HISTORY_LEN - 1))));
+    if (idx >= bwHistory.length) { hoverGroup.style.display = 'none'; return; }
+    const s = bwHistory[idx];
+    const x = xFor(idx);
+    crossLine.setAttribute('x1', x); crossLine.setAttribute('x2', x);
+    tipEsp.textContent = 'ESP32: ' + (s.espRx + s.espTx).toFixed(2) + ' KB/s';
+    tipCam.textContent = 'Camera: ' + s.camRx.toFixed(2) + ' KB/s';
+    const tipW = 120, tipH = 34;
+    let tipX = x + 8;
+    if (tipX + tipW > W - padR) tipX = x - tipW - 8;
+    tipG.setAttribute('transform', 'translate(' + tipX + ',' + padT + ')');
+    tipBg.setAttribute('width', tipW); tipBg.setAttribute('height', tipH);
+    hoverGroup.style.display = 'block';
+  };
+  overlay.onpointerleave = () => { hoverGroup.style.display = 'none'; };
+}
+setInterval(sampleBandwidth, 1000);
 
 buildRows();
 setInterval(refreshStatus, 150);

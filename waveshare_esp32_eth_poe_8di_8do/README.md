@@ -104,14 +104,23 @@ so that block is normally the only change needed.
     focus and on bfcache restore (`pageshow`), which is exactly the "seeing
     cache or history" case
   - An **IP Camera Feed** panel that renders an MJPEG stream (e.g. from an
-    Android "IP Webcam" app's `http://<phone-ip>:8080/video` URL) directly
-    via an `<img>` tag, with an editable URL field (remembered per-browser
-    in `localStorage`) and a Reconnect button. **Auto-reconnect**: every 1s,
-    if the feed isn't currently connected, the browser retries loading it —
-    the load attempt itself is the "is the camera up" test, so as soon as
-    the phone's camera app comes back online the feed starts streaming
-    again with no manual action; a healthy stream is never interrupted by
-    these checks since retries only happen while disconnected. This is
+    Android "IP Webcam" app's `http://<phone-ip>:8080/video` URL), with an
+    editable URL field (remembered per-browser in `localStorage`) and a
+    Reconnect button. Fetched and parsed by hand as a
+    `multipart/x-mixed-replace` stream (not a plain `<img src>`) — each
+    JPEG frame is extracted from the raw byte stream and shown via a
+    `Blob`/`URL.createObjectURL`, which is what lets real bytes-received be
+    counted for the Bandwidth Trend panel below (a plain `<img>` tag never
+    exposes byte-level progress for an open MJPEG connection). Boundary and
+    per-part length are read from the stream itself (`Content-Type`
+    boundary parameter, per-part `Content-Length`, falling back to
+    boundary-scanning if a part omits it) rather than assumed, so it isn't
+    tied to one camera app's exact framing. **Auto-reconnect**: every 1s, if
+    the feed isn't currently connected and no connect attempt is already in
+    flight, the browser retries — the attempt itself is the "is the camera
+    up" test, so the feed starts streaming again with no manual action the
+    moment the phone's camera app comes back online; a healthy stream is
+    never interrupted since retries only happen while disconnected. This is
     purely browser-side — the ESP32 never sees this traffic — so it only
     works if the browser viewing the page can itself reach the camera's
     address. Default is set to `http://100.69.34.95:8080/video`; that's a
@@ -132,6 +141,20 @@ so that block is normally the only change needed.
     Clients) until it completes — that's the embedded server's real
     behavior under load, not a bug, and is itself useful information
     about the link.
+  - A **Bandwidth Trend** panel: a small inline-SVG line chart (60s rolling
+    window, 1 sample/sec, hover for a crosshair + exact-value tooltip) of
+    two series — **ESP32 Interface** (rx+tx to the board itself) and **IP
+    Camera Feed** (rx from the phone) — plus exact current KB/s stat tiles
+    for each direction. This adds no network traffic of its own: it just
+    samples byte counters that the existing polling and the camera stream
+    reader (above) already accumulate for free. ESP32-interface bytes come
+    from each response's real `Content-Length` (plus a rough constant
+    per-request header-overhead estimate, since a page can't see raw
+    TCP/HTTP framing); camera bytes are the real bytes read off its stream.
+    Colors are this project's validated dark-mode categorical palette
+    slots 1 and 2 (blue/orange, `node scripts/validate_palette.js` from the
+    `dataviz` skill — CVD ΔE 26.8, normal-vision ΔE 31.8, both well clear
+    of the safety floors).
   - A scrolling Status/Debug log panel (device-side ring buffer, last 30
     events: input changes, output changes, Ethernet link events, GUI
     client connect/reconnect/stale events, heartbeats)

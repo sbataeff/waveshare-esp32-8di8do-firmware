@@ -106,6 +106,9 @@ so that block is normally the only change needed.
   Darlington output on. Confirmed by the user's own tested hardware — the
   earlier active-high guess (from a reference driver, not this board) had
   `on`/`off` backward. Flip the flag if your board reads inverted.
-- The web page polls `/api/status` and `/api/log` rather than using
-  WebSockets/SSE, to keep the sketch dependency-free and to avoid blocking
-  the CLI/input polling loop.
+- The web page polls `/api/status` (150ms) and `/api/log` (1s) rather than
+  using WebSockets/SSE, to keep the sketch dependency-free and to avoid
+  blocking the CLI/input polling loop. Clicking an output button updates it
+  instantly in the browser (optimistic UI) instead of waiting on a round
+  trip, and a poll already in flight is never overlapped with another one,
+  which was the main source of felt lag.

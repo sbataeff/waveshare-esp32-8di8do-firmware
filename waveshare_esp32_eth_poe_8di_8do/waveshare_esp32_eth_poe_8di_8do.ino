@@ -299,23 +299,65 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <div class="card"><h2>Status / Debug Log</h2><div id="log"></div></div>
 </div>
 <script>
+// Rows are built once and updated in place on every poll — avoids
+// innerHTML churn (which was re-creating all 16 rows 4x/sec and adding
+// to the perceived lag) and lets output clicks update instantly instead
+// of waiting on a network round trip.
+const diInd = [], doBtn = [];
+let doOverride = [false,false,false,false,false,false,false,false]; // optimistic local state
+let doOverrideUntil = [0,0,0,0,0,0,0,0];
+
+function buildRows(){
+  const di = document.getElementById('diList');
+  for(let i=0;i<8;i++){
+    const row=document.createElement('div'); row.className='chRow';
+    const lbl=document.createElement('span'); lbl.className='lbl'; lbl.textContent='DI'+(i+1);
+    const ind=document.createElement('span'); ind.textContent='OFF'; ind.className='ind';
+    row.appendChild(lbl); row.appendChild(ind); di.appendChild(row);
+    diInd.push(ind);
+  }
+  const doL = document.getElementById('doList');
+  for(let i=0;i<8;i++){
+    const row=document.createElement('div'); row.className='chRow';
+    const lbl=document.createElement('span'); lbl.className='lbl'; lbl.textContent='DO'+(i+1);
+    const btn=document.createElement('button'); btn.textContent='OFF';
+    const ch=i+1;
+    btn.onclick=()=>{
+      // Optimistic update: flip the button immediately, don't wait on the
+      // network. doOverride briefly wins over polled state so a slow poll
+      // response in flight can't stomp the click back to its old value.
+      const next = !btn.classList.contains('on');
+      applyDoState(i, next);
+      doOverride[i] = true;
+      doOverrideUntil[i] = Date.now() + 1500;
+      fetch('/api/output', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'ch='+ch+'&state='+(next?'on':'off')})
+        .catch(()=>{ doOverride[i]=false; applyDoState(i, !next); });
+    };
+    row.appendChild(lbl); row.appendChild(btn); doL.appendChild(row);
+    doBtn.push(btn);
+  }
+}
+function applyDoState(i, on){
+  doBtn[i].textContent = on?'ON':'OFF';
+  doBtn[i].className = on?'on':'';
+}
+
+let statusInflight = false;
 async function refreshStatus(){
+  if (statusInflight) return; // don't let requests queue up on the device
+  statusInflight = true;
   try{
     const r = await fetch('/api/status'); const d = await r.json();
-    const di = document.getElementById('diList'); di.innerHTML='';
+    const now = Date.now();
     d.di.forEach((v,i)=>{
-      const row=document.createElement('div'); row.className='chRow';
-      const lbl=document.createElement('span'); lbl.className='lbl'; lbl.textContent='DI'+(i+1);
-      const ind=document.createElement('span'); ind.textContent=v?'ON':'OFF'; ind.className='ind'+(v?' on':'');
-      row.appendChild(lbl); row.appendChild(ind); di.appendChild(row);
+      diInd[i].textContent = v?'ON':'OFF';
+      diInd[i].className = 'ind'+(v?' on':'');
     });
-    const doL = document.getElementById('doList'); doL.innerHTML='';
     d.do.forEach((v,i)=>{
-      const row=document.createElement('div'); row.className='chRow';
-      const btn=document.createElement('button'); btn.textContent=v?'ON':'OFF'; btn.className=v?'on':'';
-      btn.onclick=()=>setOutput(i+1, !v);
-      const lbl=document.createElement('span'); lbl.className='lbl'; lbl.textContent='DO'+(i+1);
-      row.appendChild(lbl); row.appendChild(btn); doL.appendChild(row);
+      if (doOverride[i] && now < doOverrideUntil[i]) return; // trust the click for a moment
+      doOverride[i] = false;
+      applyDoState(i, v);
     });
     document.getElementById('deviceInfo').innerHTML = `
       <div class="kv"><span>Hostname</span><span>${d.hostname}</span></div>
@@ -327,19 +369,20 @@ async function refreshStatus(){
       <div class="kv"><span>Your (client) IP</span><span>${d.client_ip}</span></div>
       <div class="kv"><span>Your User-Agent</span><span style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${d.client_ua}</span></div>`;
   }catch(e){ document.getElementById('log').textContent = 'status fetch failed: '+e; }
+  finally{ statusInflight = false; }
 }
+let logInflight = false;
 async function refreshLog(){
+  if (logInflight) return;
+  logInflight = true;
   try{
     const r = await fetch('/api/log'); const d = await r.json();
     document.getElementById('log').textContent = d.lines.join('\n');
   }catch(e){}
+  finally{ logInflight = false; }
 }
-async function setOutput(ch,on){
-  await fetch('/api/output', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'ch='+ch+'&state='+(on?'on':'off')});
-  refreshStatus();
-}
-setInterval(refreshStatus, 250);
+buildRows();
+setInterval(refreshStatus, 150);
 setInterval(refreshLog, 1000);
 refreshStatus(); refreshLog();
 </script></body></html>

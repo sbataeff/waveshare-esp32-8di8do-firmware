@@ -38,7 +38,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
  #camWrap{position:relative;background:#0d1117;border-radius:6px;min-height:120px;display:flex;align-items:center;justify-content:center;overflow:hidden}
  #camImg{max-width:100%;display:block}
  #camError{display:none;color:#e0776d;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:16px;text-align:center}
- .camRow select{background:#0d1117;color:#e6e6e6;border:1px solid #3a4256;border-radius:6px;padding:6px 8px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+ select{background:#0d1117;color:#e6e6e6;border:1px solid #3a4256;border-radius:6px;padding:6px 8px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
  .camRow input[type=number]{flex:0 0 130px}
  #pingResult{font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:8px;background:#0d1117;border-radius:6px;margin-bottom:8px}
  #pingNote{font-size:11px;color:#93a1b7;margin-top:8px;line-height:1.4}
@@ -85,7 +85,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     </div>
     <div id="pingResult">No test run yet.</div>
     <div class="chRow">
-      <span class="lbl">Live latency ticker (every 2s)</span>
+      <span class="lbl">Live latency ticker</span>
       <span style="display:flex;gap:8px;align-items:center">
         <span id="pingTickerVal" class="ind">OFF</span>
         <button id="pingTickerToggle">Enable</button>
@@ -94,6 +94,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
     <div id="pingNote">Round trip = time for the ESP32 to send back the chosen payload. The board serves one request at a time, so other live panels (DI/DO, GUI Clients) may pause while a large test is in flight — that's the embedded server's real behavior under load, not a bug.</div>
   </div>
   <div class="card latCard"><h2>Latency Trend</h2>
+    <div class="chRow">
+      <span class="lbl">Update rate (ping interval)</span>
+      <select id="latRateSelect"></select>
+    </div>
     <div id="latChartWrap">
       <svg id="latChart" viewBox="0 0 600 120" preserveAspectRatio="none"></svg>
       <div id="latEmpty">Enable the live latency ticker above to start recording a trend.</div>
@@ -103,9 +107,13 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       <div class="statTile"><div class="statLabel">Average (window)</div><div class="statVal" id="latAvg">—</div></div>
       <div class="statTile"><div class="statLabel">Max / jitter (window)</div><div class="statVal" id="latMax">—</div></div>
     </div>
-    <div id="pingNote">One point per latency-ticker ping (every 2s while enabled) — a 0-byte round trip, same measurement as the ticker value above. Last 60 points (~2 min). A gap in the line means that ping failed. History is kept when you disable the ticker; new points resume once you re-enable it.</div>
+    <div id="pingNote">One point per latency-ticker ping — a 0-byte round trip, same measurement as the ticker value above. This rate <strong>is</strong> the ticker's ping interval, so a faster rate sends more real pings (more data used); the "save data" toggle is still the Enable/Disable button. ~60s rolling window at the current rate. A gap in the line means that ping failed. History is kept when you disable the ticker; new points resume once you re-enable it.</div>
   </div>
   <div class="card bwCard"><h2>Bandwidth Trend</h2>
+    <div class="chRow">
+      <span class="lbl">Update rate (chart re-sample)</span>
+      <select id="bwRateSelect"></select>
+    </div>
     <div class="bwLegend">
       <span class="key"><span class="swatch" style="background:#3987e5"></span>ESP32 Interface</span>
       <span class="key"><span class="swatch" style="background:#d95926"></span>IP Camera Feed</span>
@@ -116,7 +124,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       <div class="statTile"><div class="statLabel">ESP32 interface ↑ (upload)</div><div class="statVal" id="bwEspTx">0.0 KB/s</div></div>
       <div class="statTile"><div class="statLabel">Camera feed ↓ (download)</div><div class="statVal" id="bwCamRx">0.0 KB/s</div></div>
     </div>
-    <div id="pingNote">Measured client-side from actual bytes transferred (response Content-Length for the ESP32 interface; real bytes read from the camera's MJPEG stream) — not a synthetic estimate. Includes ~200B/request assumed HTTP header overhead per direction since the browser can't see raw TCP/HTTP framing. 60s rolling window, 1 sample/sec.</div>
+    <div id="pingNote">Measured client-side from actual bytes transferred (response Content-Length for the ESP32 interface; real bytes read from the camera's MJPEG stream) — not a synthetic estimate. Includes ~200B/request assumed HTTP header overhead per direction since the browser can't see raw TCP/HTTP framing. This rate only changes how often the chart re-samples and redraws — it doesn't add network traffic, since it's just reading counters that existing traffic already produces. ~60s rolling window at the current rate.</div>
   </div>
   <div class="card"><h2>Status / Debug Log</h2><div id="log"></div></div>
 </div>
@@ -464,13 +472,32 @@ document.getElementById('pingRunBtn').onclick = async () => {
   }
 };
 
-// Latency ticker: a separate, toggle-able lightweight 0-byte round trip
-// every 2s, off by default so it costs no data unless explicitly enabled.
-// Each successful (or failed) ping is also recorded into latencyHistory
-// for the Latency Trend chart below — same measurement, just plotted.
+// Shared rate dropdown, used by both trend panels. Each panel keeps its
+// own rolling window at roughly a constant ~60s of *time* rather than a
+// fixed sample *count*, so the chart reads the same "last minute or so"
+// regardless of which rate is picked.
+const RATE_OPTIONS = [['0.1s', 100], ['0.25s', 250], ['0.5s', 500], ['1s', 1000], ['2s', 2000]];
+function historyLenForRate(intervalMs){
+  return Math.max(10, Math.min(600, Math.round(60000 / intervalMs)));
+}
+function populateRateSelect(selectEl, defaultMs){
+  RATE_OPTIONS.forEach(([label, ms]) => {
+    const opt = document.createElement('option'); opt.value = ms; opt.textContent = label;
+    selectEl.appendChild(opt);
+  });
+  selectEl.value = String(defaultMs);
+}
+
+// Latency ticker: a separate, toggle-able lightweight 0-byte round trip,
+// off by default so it costs no data unless explicitly enabled. Each
+// successful (or failed) ping is also recorded into latencyHistory for the
+// Latency Trend chart below — same measurement, just plotted. The rate
+// selector on that chart IS the ticker's actual ping interval — unlike the
+// bandwidth chart's rate, this one changes how much real traffic is sent.
 let tickerEnabled = false;
 let tickerTimer = null;
-const LAT_HISTORY_LEN = 60; // ~2 min at one point per 2s tick
+let tickerIntervalMs = 2000;
+let latHistoryLen = historyLenForRate(tickerIntervalMs);
 let latencyHistory = []; // ms, or null for a failed ping (shows as a gap)
 
 async function tickerOnce(){
@@ -486,21 +513,34 @@ async function tickerOnce(){
     val.className = 'ind';
   }
   latencyHistory.push(ms);
-  if (latencyHistory.length > LAT_HISTORY_LEN) latencyHistory.shift();
+  while (latencyHistory.length > latHistoryLen) latencyHistory.shift();
   drawLatencyChart();
+}
+function startTicker(){
+  if (tickerTimer) clearInterval(tickerTimer);
+  tickerOnce();
+  tickerTimer = setInterval(tickerOnce, tickerIntervalMs);
 }
 document.getElementById('pingTickerToggle').onclick = () => {
   tickerEnabled = !tickerEnabled;
   document.getElementById('pingTickerToggle').textContent = tickerEnabled ? 'Disable' : 'Enable';
   if (tickerEnabled) {
-    tickerOnce();
-    tickerTimer = setInterval(tickerOnce, 2000);
+    startTicker();
   } else {
     clearInterval(tickerTimer);
     const val = document.getElementById('pingTickerVal');
     val.textContent = 'OFF';
     val.className = 'ind';
   }
+};
+const latRateSelect = document.getElementById('latRateSelect');
+populateRateSelect(latRateSelect, tickerIntervalMs);
+latRateSelect.onchange = () => {
+  tickerIntervalMs = parseInt(latRateSelect.value, 10);
+  latHistoryLen = historyLenForRate(tickerIntervalMs);
+  while (latencyHistory.length > latHistoryLen) latencyHistory.shift();
+  if (tickerEnabled) startTicker(); // restart at the new cadence without losing history
+  drawLatencyChart();
 };
 
 function drawLatencyChart(){
@@ -528,7 +568,7 @@ function drawLatencyChart(){
     svg.appendChild(t);
   }
 
-  function xFor(i){ return padL + plotW * (i / (LAT_HISTORY_LEN - 1)); }
+  function xFor(i){ return padL + plotW * (i / (latHistoryLen - 1)); }
   function yFor(v){ return padT + plotH * (1 - Math.min(v, niceMax) / niceMax); }
 
   // Break the line at nulls (failed pings) instead of interpolating over them.
@@ -549,13 +589,19 @@ function drawLatencyChart(){
 
 // Bandwidth trend: samples the espRxBytes/espTxBytes/camRxBytes counters
 // (already accumulated for free by espFetch and the camera stream reader
-// above — this adds no extra network traffic of its own) once a second
-// into a 60-sample rolling window, and draws it as a small inline-SVG line
-// chart. Two series: ESP32 web interface (rx+tx combined) and camera feed
-// (rx only — a video pull has no meaningful upload). Colors are the
-// project's validated dark-mode categorical slots 1 & 2 (blue/orange).
-const BW_HISTORY_LEN = 60;
+// above — this adds no extra network traffic of its own) on a timer, and
+// draws them as a small inline-SVG line chart. Two series: ESP32 web
+// interface (rx+tx combined) and camera feed (rx only — a video pull has
+// no meaningful upload). Colors are the project's validated dark-mode
+// categorical slots 1 & 2 (blue/orange). KB/s is normalized by the actual
+// elapsed time since the last sample (not assumed to be exactly the
+// selected interval), since a rate as fast as 100ms would otherwise read
+// ~10x too low from setInterval jitter alone.
 const BW_SVG_NS = 'http://www.w3.org/2000/svg';
+let bwIntervalMs = 1000;
+let bwHistoryLen = historyLenForRate(bwIntervalMs);
+let bwTimer = null;
+let bwLastSampleMs = Date.now();
 let bwHistory = [];
 let bwPlotMeta = null; // set by drawBandwidthChart(), read by the hover handler
 
@@ -566,15 +612,25 @@ function svgEl(tag, attrs){
 }
 
 function sampleBandwidth(){
-  const espRxKBps = espRxBytes / 1024, espTxKBps = espTxBytes / 1024, camRxKBps = camRxBytes / 1024;
+  const now = Date.now();
+  const elapsedS = Math.max(0.001, (now - bwLastSampleMs) / 1000);
+  bwLastSampleMs = now;
+  const espRxKBps = (espRxBytes / 1024) / elapsedS;
+  const espTxKBps = (espTxBytes / 1024) / elapsedS;
+  const camRxKBps = (camRxBytes / 1024) / elapsedS;
   bwHistory.push({ espRx: espRxKBps, espTx: espTxKBps, camRx: camRxKBps });
-  if (bwHistory.length > BW_HISTORY_LEN) bwHistory.shift();
+  while (bwHistory.length > bwHistoryLen) bwHistory.shift();
   espRxBytes = 0; espTxBytes = 0; camRxBytes = 0;
 
   document.getElementById('bwEspRx').textContent = espRxKBps.toFixed(2) + ' KB/s';
   document.getElementById('bwEspTx').textContent = espTxKBps.toFixed(2) + ' KB/s';
   document.getElementById('bwCamRx').textContent = camRxKBps.toFixed(2) + ' KB/s';
   drawBandwidthChart();
+}
+function startBwSampling(){
+  if (bwTimer) clearInterval(bwTimer);
+  bwLastSampleMs = Date.now();
+  bwTimer = setInterval(sampleBandwidth, bwIntervalMs);
 }
 
 function drawBandwidthChart(){
@@ -598,7 +654,7 @@ function drawBandwidthChart(){
     svg.appendChild(t);
   }
 
-  function xFor(i){ return padL + plotW * (i / (BW_HISTORY_LEN - 1)); }
+  function xFor(i){ return padL + plotW * (i / (bwHistoryLen - 1)); }
   function yFor(v){ return padT + plotH * (1 - Math.min(v, niceMax) / niceMax); }
 
   function drawSeries(series, color){
@@ -642,7 +698,7 @@ function drawBandwidthChart(){
     const scaleX = W / rect.width;
     const svgX = (ev.clientX - rect.left) * scaleX;
     const frac = (svgX - padL) / plotW;
-    const idx = Math.max(0, Math.min(bwHistory.length - 1, Math.round(frac * (BW_HISTORY_LEN - 1))));
+    const idx = Math.max(0, Math.min(bwHistory.length - 1, Math.round(frac * (bwHistoryLen - 1))));
     if (idx >= bwHistory.length) { hoverGroup.style.display = 'none'; return; }
     const s = bwHistory[idx];
     const x = xFor(idx);
@@ -658,7 +714,16 @@ function drawBandwidthChart(){
   };
   overlay.onpointerleave = () => { hoverGroup.style.display = 'none'; };
 }
-setInterval(sampleBandwidth, 1000);
+const bwRateSelect = document.getElementById('bwRateSelect');
+populateRateSelect(bwRateSelect, bwIntervalMs);
+bwRateSelect.onchange = () => {
+  bwIntervalMs = parseInt(bwRateSelect.value, 10);
+  bwHistoryLen = historyLenForRate(bwIntervalMs);
+  while (bwHistory.length > bwHistoryLen) bwHistory.shift();
+  startBwSampling();
+  drawBandwidthChart();
+};
+startBwSampling();
 
 buildRows();
 setInterval(refreshStatus, 150);

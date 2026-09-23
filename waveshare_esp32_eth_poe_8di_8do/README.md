@@ -141,24 +141,35 @@ so that block is normally the only change needed.
     Clients) until it completes — that's the embedded server's real
     behavior under load, not a bug, and is itself useful information
     about the link.
+  - Both trend panels below have an **update-rate dropdown** (0.1s, 0.25s,
+    0.5s, 1s, 2s). Each keeps a rolling window of roughly constant *time*
+    (~60s) rather than a fixed sample count, so the chart reads "the last
+    minute or so" regardless of rate — more points at a faster rate, fewer
+    at a slower one. The two rates mean different things, though: **on
+    Latency Trend, the rate *is* the ticker's real ping interval** — 0.1s
+    means 10 real 0-byte pings/sec, more data used, and changing it while
+    the ticker is running restarts it at the new cadence without losing
+    history. **On Bandwidth Trend, the rate only controls how often the
+    chart re-samples and redraws** — it's reading byte counters that
+    existing traffic already produced, so it adds no network calls of its
+    own at any rate. KB/s is normalized by the actual elapsed time between
+    samples (not assumed to equal the selected interval), so the numbers
+    stay correct even at 0.1s.
   - A **Latency Trend** panel: every latency-ticker ping (the same 0-byte
-    round trip as the ticker value, one point per 2s while it's enabled)
-    is also plotted as a line chart, last 60 points (~2 min), with a failed
-    ping shown as a gap rather than interpolated over, plus current/average/
-    max stat tiles. Shows an empty-state message until you enable the
-    ticker above; disabling it freezes the chart where it is (history isn't
-    cleared) and re-enabling resumes adding points to the same trend.
-  - A **Bandwidth Trend** panel: a small inline-SVG line chart (60s rolling
-    window, 1 sample/sec, hover for a crosshair + exact-value tooltip) of
-    two series — **ESP32 Interface** (rx+tx to the board itself) and **IP
-    Camera Feed** (rx from the phone) — plus exact current KB/s stat tiles
-    for each direction. This adds no network traffic of its own: it just
-    samples byte counters that the existing polling and the camera stream
-    reader (above) already accumulate for free. ESP32-interface bytes come
-    from each response's real `Content-Length` (plus a rough constant
-    per-request header-overhead estimate, since a page can't see raw
-    TCP/HTTP framing); camera bytes are the real bytes read off its stream.
-    Colors are this project's validated dark-mode categorical palette
+    round trip as the ticker value) is also plotted as a line chart, with a
+    failed ping shown as a gap rather than interpolated over, plus
+    current/average/max stat tiles. Shows an empty-state message until you
+    enable the ticker above; disabling it freezes the chart where it is
+    (history isn't cleared) and re-enabling resumes adding points to the
+    same trend.
+  - A **Bandwidth Trend** panel: a small inline-SVG line chart (hover for a
+    crosshair + exact-value tooltip) of two series — **ESP32 Interface**
+    (rx+tx to the board itself) and **IP Camera Feed** (rx from the phone)
+    — plus exact current KB/s stat tiles for each direction. ESP32-interface
+    bytes come from each response's real `Content-Length` (plus a rough
+    constant per-request header-overhead estimate, since a page can't see
+    raw TCP/HTTP framing); camera bytes are the real bytes read off its
+    stream. Colors are this project's validated dark-mode categorical palette
     slots 1 and 2 (blue/orange, `node scripts/validate_palette.js` from the
     `dataviz` skill — CVD ΔE 26.8, normal-vision ΔE 31.8, both well clear
     of the safety floors).

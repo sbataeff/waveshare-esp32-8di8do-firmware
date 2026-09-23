@@ -91,8 +91,21 @@ so that block is normally the only change needed.
   - A "Device / Connected client" panel showing the board's hostname,
     Ethernet link state, DHCP IP, subnet mask, gateway, MAC, uptime, free
     heap, and the **requesting browser's IP address and User-Agent**
+  - A **GUI Clients** panel listing every browser IP the board has seen hit
+    it, each marked `LIVE` (polled within the last 3s) or `Ns ago` if it's
+    gone quiet — so you can see who's actually connected, not just who
+    loaded the page once
+  - A **connection watchdog banner**: the page tracks how long it's been
+    since its own poll last actually succeeded, and if that exceeds 2s it
+    shows a red "⚠ NOT LIVE — no response from ESP32 for Ns" banner across
+    the top. This is what tells you whether you're looking at a live,
+    connected page versus a frozen/cached browser tab that stopped talking
+    to the board — the banner also forces an immediate refresh on tab
+    focus and on bfcache restore (`pageshow`), which is exactly the "seeing
+    cache or history" case
   - A scrolling Status/Debug log panel (device-side ring buffer, last 30
-    events: input changes, output changes, Ethernet link events, heartbeats)
+    events: input changes, output changes, Ethernet link events, GUI
+    client connect/reconnect/stale events, heartbeats)
 - **Serial CLI over native USB CDC** (`Serial`, 115200 baud):
   - `help` — list commands
   - `status` — print all DI/DO states plus Ethernet link/IP/subnet/gateway
@@ -103,6 +116,10 @@ so that block is normally the only change needed.
     inactive (debounced ~20ms), e.g. `[DI3] ACTIVE`
   - A heartbeat line prints every 30s with link/IP/heap so you can confirm
     the board and its Ethernet link are alive without needing an input event
+  - GUI client activity also prints to serial: `[WEB] new client connected:
+    <ip>`, `[WEB] client <ip> went stale — no response Ns`, and `[WEB]
+    client <ip> reconnected` — the server tracks up to 6 client IPs at
+    once, evicting the least-recently-seen one if more connect
 
 ## Arduino IDE setup
 

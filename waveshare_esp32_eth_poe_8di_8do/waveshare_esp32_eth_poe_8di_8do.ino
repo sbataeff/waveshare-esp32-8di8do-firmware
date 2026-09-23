@@ -277,7 +277,80 @@ static void pollInputs() {
 }
 
 // ---------------------------------------------------------------------------
-// Web UI — single page, polls /api/status every 250ms for near-real-time view
+// Web GUI client tracking — who's actually polling us, and are they still
+// live or just a stale/cached browser tab that stopped talking to us
+// ---------------------------------------------------------------------------
+
+#define MAX_TRACKED_CLIENTS 6
+#define CLIENT_STALE_MS 3000 // no request from this IP in this long = stale
+
+struct WebClient {
+  IPAddress ip;
+  String userAgent;
+  unsigned long lastSeenMs;
+  bool used;
+  bool stale; // last-logged staleness state, so transitions log once
+};
+static WebClient webClients[MAX_TRACKED_CLIENTS];
+
+static void noteWebClient(IPAddress ip, const String &ua) {
+  unsigned long now = millis();
+  int freeSlot = -1;
+  for (int i = 0; i < MAX_TRACKED_CLIENTS; i++) {
+    if (webClients[i].used && webClients[i].ip == ip) {
+      bool wasStale = webClients[i].stale;
+      webClients[i].lastSeenMs = now;
+      webClients[i].stale = false;
+      if (ua.length()) webClients[i].userAgent = ua;
+      if (wasStale) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "[WEB] client %s reconnected", ip.toString().c_str());
+        logEvent(msg);
+      }
+      return;
+    }
+    if (!webClients[i].used && freeSlot == -1) freeSlot = i;
+  }
+  // New client. If the table is full, evict whichever tracked client was
+  // seen longest ago rather than refusing to track a new one.
+  int slot = freeSlot;
+  if (slot == -1) {
+    unsigned long oldest = now + 1;
+    slot = 0;
+    for (int i = 0; i < MAX_TRACKED_CLIENTS; i++) {
+      if (webClients[i].lastSeenMs < oldest) {
+        oldest = webClients[i].lastSeenMs;
+        slot = i;
+      }
+    }
+  }
+  webClients[slot].ip = ip;
+  webClients[slot].userAgent = ua;
+  webClients[slot].lastSeenMs = now;
+  webClients[slot].used = true;
+  webClients[slot].stale = false;
+  char msg[80];
+  snprintf(msg, sizeof(msg), "[WEB] new client connected: %s", ip.toString().c_str());
+  logEvent(msg);
+}
+
+static void scanClientStaleness() {
+  unsigned long now = millis();
+  for (int i = 0; i < MAX_TRACKED_CLIENTS; i++) {
+    if (!webClients[i].used) continue;
+    unsigned long agoMs = now - webClients[i].lastSeenMs;
+    if (agoMs > CLIENT_STALE_MS && !webClients[i].stale) {
+      webClients[i].stale = true;
+      char msg[80];
+      snprintf(msg, sizeof(msg), "[WEB] client %s went stale — no response %lus",
+               webClients[i].ip.toString().c_str(), agoMs / 1000);
+      logEvent(msg);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Web UI — single page, polls /api/status every 150ms for near-real-time view
 // ---------------------------------------------------------------------------
 
 static IPAddress lastClientIp(0, 0, 0, 0);
@@ -306,12 +379,15 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
  .status-pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px}
  .status-pill.up{background:#1e3d2c;color:#3ddc84}
  .status-pill.down{background:#3d1e1e;color:#e0776d}
+ #connBanner{display:none;background:#3d1e1e;color:#ffb4a8;border:1px solid #7a3a2f;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
 </style></head><body>
 <h1>WaveShare ESP32 8DI/8DO Console</h1>
+<div id="connBanner"></div>
 <div class="grid">
   <div class="card"><h2>Digital Inputs</h2><div id="diList"></div></div>
   <div class="card"><h2>Digital Outputs</h2><div id="doList"></div></div>
   <div class="card"><h2>Device / Connected Client</h2><div id="deviceInfo"></div></div>
+  <div class="card"><h2>GUI Clients</h2><div id="clientsList"></div></div>
   <div class="card"><h2>Status / Debug Log</h2><div id="log"></div></div>
 </div>
 <script>
@@ -359,12 +435,33 @@ function applyDoState(i, on){
   doBtn[i].className = on?'on':'';
 }
 
+// Watchdog: tracks the last time /api/status actually succeeded. If this
+// gets stale, the banner makes it obvious you're looking at a frozen or
+// cached page rather than a live connection to the board — distinct from
+// a poll simply being in flight.
+let lastGoodPollMs = Date.now();
+const STALE_AFTER_MS = 2000;
+
+function updateConnBanner(){
+  const staleFor = Date.now() - lastGoodPollMs;
+  const banner = document.getElementById('connBanner');
+  if (staleFor > STALE_AFTER_MS) {
+    banner.style.display = 'block';
+    banner.textContent = '⚠ NOT LIVE — no response from ESP32 for ' + Math.round(staleFor/1000) +
+      's. You may be viewing a cached/offline page — reload to reconnect.';
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
 let statusInflight = false;
 async function refreshStatus(){
   if (statusInflight) return; // don't let requests queue up on the device
   statusInflight = true;
   try{
     const r = await fetch('/api/status'); const d = await r.json();
+    lastGoodPollMs = Date.now();
+    window.__myIp = d.client_ip;
     const now = Date.now();
     d.di.forEach((v,i)=>{
       diInd[i].textContent = v?'ON':'OFF';
@@ -399,16 +496,47 @@ async function refreshLog(){
   }catch(e){}
   finally{ logInflight = false; }
 }
+let clientsInflight = false;
+async function refreshClients(){
+  if (clientsInflight) return;
+  clientsInflight = true;
+  try{
+    const r = await fetch('/api/clients'); const d = await r.json();
+    const el = document.getElementById('clientsList');
+    el.innerHTML = '';
+    if (d.clients.length === 0) {
+      el.innerHTML = '<div class="lbl" style="color:#93a1b7">No clients seen yet</div>';
+    }
+    d.clients.forEach(c=>{
+      const row=document.createElement('div'); row.className='chRow';
+      const left=document.createElement('span'); left.className='lbl';
+      left.textContent = c.ip + (c.ip===window.__myIp ? ' (you)' : '');
+      const right=document.createElement('span');
+      right.className = 'ind' + (c.active?' on':'');
+      right.textContent = c.active ? 'LIVE' : (Math.round(c.ago_ms/1000)+'s ago');
+      row.appendChild(left); row.appendChild(right); el.appendChild(row);
+    });
+  }catch(e){}
+  finally{ clientsInflight = false; }
+}
 buildRows();
 setInterval(refreshStatus, 150);
 setInterval(refreshLog, 1000);
-refreshStatus(); refreshLog();
+setInterval(refreshClients, 1000);
+setInterval(updateConnBanner, 500);
+// A bfcache restore or a background tab regaining focus can leave stale
+// data on screen with timers paused/throttled — force an immediate
+// re-check the moment the page is actually looked at again.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshStatus(); });
+window.addEventListener('pageshow', () => { refreshStatus(); refreshClients(); refreshLog(); });
+refreshStatus(); refreshLog(); refreshClients();
 </script></body></html>
 )HTML";
 
 static void captureClientInfo() {
   lastClientIp = server.client().remoteIP();
   if (server.hasHeader("User-Agent")) lastClientUserAgent = server.header("User-Agent");
+  noteWebClient(lastClientIp, lastClientUserAgent);
 }
 
 static void handleRoot() {
@@ -458,6 +586,25 @@ static void handleApiLog() {
   server.send(200, "application/json", json);
 }
 
+static void handleApiClients() {
+  captureClientInfo();
+  unsigned long now = millis();
+  String json = "{\"clients\":[";
+  bool first = true;
+  for (int i = 0; i < MAX_TRACKED_CLIENTS; i++) {
+    if (!webClients[i].used) continue;
+    if (!first) json += ",";
+    first = false;
+    unsigned long agoMs = now - webClients[i].lastSeenMs;
+    json += "{\"ip\":\"" + webClients[i].ip.toString() + "\",";
+    json += "\"ua\":\"" + jsonEscape(webClients[i].userAgent) + "\",";
+    json += "\"ago_ms\":" + String(agoMs) + ",";
+    json += "\"active\":" + String(agoMs <= CLIENT_STALE_MS ? "true" : "false") + "}";
+  }
+  json += "]}";
+  server.send(200, "application/json", json);
+}
+
 static void handleApiOutput() {
   captureClientInfo();
   if (!server.hasArg("ch") || !server.hasArg("state")) {
@@ -477,6 +624,7 @@ static void webInit() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/status", HTTP_GET, handleApiStatus);
   server.on("/api/log", HTTP_GET, handleApiLog);
+  server.on("/api/clients", HTTP_GET, handleApiClients);
   server.on("/api/output", HTTP_POST, handleApiOutput);
   server.begin();
 }
@@ -584,6 +732,8 @@ static void handleSerialCli() {
 static unsigned long lastHeartbeat = 0;
 static unsigned long lastDhcpWaitMsg = 0;
 static const unsigned long DHCP_WAIT_MSG_MS = 5000; // remind every 5s while link is up but no lease yet
+static unsigned long lastClientStalenessScan = 0;
+static const unsigned long CLIENT_STALENESS_SCAN_MS = 1000;
 
 void setup() {
   Serial.begin(115200);
@@ -626,5 +776,10 @@ void loop() {
     snprintf(msg, sizeof(msg), "[ETH] still waiting for DHCP lease... (%lus since link up)",
              (now - ethLinkUpSinceMs) / 1000);
     logEvent(msg);
+  }
+
+  if (now - lastClientStalenessScan >= CLIENT_STALENESS_SCAN_MS) {
+    lastClientStalenessScan = now;
+    scanClientStaleness();
   }
 }

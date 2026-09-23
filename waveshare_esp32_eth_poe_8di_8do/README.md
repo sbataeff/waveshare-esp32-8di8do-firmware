@@ -46,6 +46,19 @@ If you can get the Ethernet block of the official diagram (it wasn't in the
 crop shared so far), it's worth a final cross-check against those five W5500
 pins.
 
+Separately: the sketch's `ETH.begin(...)` call and general approach (no
+manual MAC address setting) were checked against the actual
+[Arduino-ESP32 core source](https://github.com/espressif/arduino-esp32)
+(`libraries/Ethernet/src/ETH.cpp`/`.h`) and its own official
+`ETH_W5500_Arduino_SPI` example — the overload used here is real, and the
+core automatically derives and programs a MAC address into the W5500 at
+`begin()` time (`esp_read_mac()` + `esp_eth_ioctl(ETH_CMD_S_MAC_ADDR, ...)`
+around `ETH.cpp:805-820`), the same thing `hennejg`'s driver does manually.
+So if link comes up but DHCP never completes, it is very unlikely to be a
+firmware bug in this sketch — see the "still waiting for DHCP" log line
+below and check the network side (DHCP server reachability, switch port,
+PoE injector) first.
+
 Waveshare still sells other similarly named boards (`ESP32-S3-ETH-8DI-8RO`,
 a plain `ESP32-ETH-POE-8DI-8DO` without "S3", ...) that may differ, so if
 your own board's silkscreen/manual disagrees anywhere above, trust your own
@@ -60,25 +73,32 @@ so that block is normally the only change needed.
 - **Auto-reconnect handling**: link up/down transitions are handled by the
   Arduino-ESP32 network event system. On cable disconnect it logs
   `[ETH] link DOWN`; on reconnect it logs `[ETH] link UP — requesting DHCP
-  lease...` followed by `[ETH] DHCP OK — IP ...` once a new lease is
-  obtained — no reboot needed, and every transition is printed to the serial
-  monitor.
+  lease...` followed by `[ETH] DHCP OK — IP <ip> subnet <mask> gateway <gw>
+  MAC ...` once a new lease is obtained — no reboot needed, and every
+  transition is printed to the serial monitor. A DHCP lease lost without a
+  link drop (`ARDUINO_EVENT_ETH_LOST_IP`) is also logged and re-acquired
+  automatically. While the link is up but no lease has completed yet, a
+  `[ETH] still waiting for DHCP lease... (Ns since link up)` line prints
+  every 5s — if that keeps printing well past 30-60s, the board itself is
+  fine and the problem is network-side (no DHCP server reachable on that
+  link/switch port), not firmware.
 - **Web UI** (served from the board itself, plain HTML/CSS/JS, no external
   libraries) at `http://<board-ip>/`:
   - Live ON/OFF indicators for all 8 inputs, styled the same as the output
-    buttons (polls every 250ms)
-  - Toggle buttons for all 8 outputs
+    buttons (polls every 150ms)
+  - Toggle buttons for all 8 outputs, with instant (optimistic) click
+    feedback instead of waiting on a round trip
   - A "Device / Connected client" panel showing the board's hostname,
-    Ethernet link state, DHCP IP, MAC, uptime, free heap, and the
-    **requesting browser's IP address and User-Agent**
+    Ethernet link state, DHCP IP, subnet mask, gateway, MAC, uptime, free
+    heap, and the **requesting browser's IP address and User-Agent**
   - A scrolling Status/Debug log panel (device-side ring buffer, last 30
     events: input changes, output changes, Ethernet link events, heartbeats)
 - **Serial CLI over native USB CDC** (`Serial`, 115200 baud):
   - `help` — list commands
-  - `status` — print all DI/DO states plus Ethernet link/IP
+  - `status` — print all DI/DO states plus Ethernet link/IP/subnet/gateway
   - `on <1-8>` / `off <1-8>` / `toggle <1-8>` — manually drive an output
   - `all on` / `all off` — drive all 8 outputs at once
-  - `ip` — print current link state / DHCP IP
+  - `ip` — print current link state / DHCP IP/subnet/gateway
   - Every DI channel auto-reports over serial the moment it goes active or
     inactive (debounced ~20ms), e.g. `[DI3] ACTIVE`
   - A heartbeat line prints every 30s with link/IP/heap so you can confirm

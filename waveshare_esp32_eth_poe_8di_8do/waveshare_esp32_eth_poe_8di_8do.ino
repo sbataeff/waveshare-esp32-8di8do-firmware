@@ -127,6 +127,9 @@ static void logEvent(const String &msg) {
 static bool ethLinkUp = false;
 static bool ethHasIp = false;
 static IPAddress ethIp;
+static IPAddress ethSubnet;
+static IPAddress ethGateway;
+static unsigned long ethLinkUpSinceMs = 0;
 
 static void onEthEvent(arduino_event_id_t event) {
   switch (event) {
@@ -136,22 +139,35 @@ static void onEthEvent(arduino_event_id_t event) {
       break;
     case ARDUINO_EVENT_ETH_CONNECTED:
       ethLinkUp = true;
+      ethLinkUpSinceMs = millis();
       logEvent("[ETH] link UP — requesting DHCP lease...");
       break;
     case ARDUINO_EVENT_ETH_GOT_IP: {
       ethHasIp = true;
       ethIp = ETH.localIP();
-      char msg[80];
-      snprintf(msg, sizeof(msg), "[ETH] DHCP OK — IP %s  MAC %s  %s",
-               ethIp.toString().c_str(), ETH.macAddress().c_str(),
+      ethSubnet = ETH.subnetMask();
+      ethGateway = ETH.gatewayIP();
+      char msg[128];
+      snprintf(msg, sizeof(msg), "[ETH] DHCP OK — IP %s  subnet %s  gateway %s  MAC %s  %s",
+               ethIp.toString().c_str(), ethSubnet.toString().c_str(),
+               ethGateway.toString().c_str(), ETH.macAddress().c_str(),
                ETH.fullDuplex() ? "full-duplex" : "half-duplex");
       logEvent(msg);
       break;
     }
+    case ARDUINO_EVENT_ETH_LOST_IP:
+      ethHasIp = false;
+      ethIp = IPAddress(0, 0, 0, 0);
+      ethSubnet = IPAddress(0, 0, 0, 0);
+      ethGateway = IPAddress(0, 0, 0, 0);
+      logEvent("[ETH] DHCP lease lost — link still up, will re-DHCP");
+      break;
     case ARDUINO_EVENT_ETH_DISCONNECTED:
       ethLinkUp = false;
       ethHasIp = false;
       ethIp = IPAddress(0, 0, 0, 0);
+      ethSubnet = IPAddress(0, 0, 0, 0);
+      ethGateway = IPAddress(0, 0, 0, 0);
       logEvent("[ETH] link DOWN — cable unplugged, will re-DHCP on reconnect");
       break;
     case ARDUINO_EVENT_ETH_STOP:
@@ -363,6 +379,8 @@ async function refreshStatus(){
       <div class="kv"><span>Hostname</span><span>${d.hostname}</span></div>
       <div class="kv"><span>Ethernet link</span><span class="status-pill ${d.eth_link?'up':'down'}">${d.eth_link?'UP':'DOWN'}</span></div>
       <div class="kv"><span>Device IP (DHCP)</span><span>${d.eth_ip}</span></div>
+      <div class="kv"><span>Subnet mask</span><span>${d.eth_subnet}</span></div>
+      <div class="kv"><span>Gateway</span><span>${d.eth_gateway}</span></div>
       <div class="kv"><span>MAC</span><span>${d.mac}</span></div>
       <div class="kv"><span>Uptime</span><span>${d.uptime_s}s</span></div>
       <div class="kv"><span>Free heap</span><span>${d.free_heap}B</span></div>
@@ -414,6 +432,8 @@ static void handleApiStatus() {
   json += "\"hostname\":\"" + String(HOSTNAME) + "\",";
   json += "\"eth_link\":" + String(ethLinkUp ? "true" : "false") + ",";
   json += "\"eth_ip\":\"" + (ethHasIp ? ethIp.toString() : String("0.0.0.0")) + "\",";
+  json += "\"eth_subnet\":\"" + (ethHasIp ? ethSubnet.toString() : String("0.0.0.0")) + "\",";
+  json += "\"eth_gateway\":\"" + (ethHasIp ? ethGateway.toString() : String("0.0.0.0")) + "\",";
   json += "\"mac\":\"" + ETH.macAddress() + "\",";
   json += "\"uptime_s\":" + String(millis() / 1000) + ",";
   json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
@@ -481,10 +501,12 @@ static void printHelp() {
 
 static void printStatus() {
   Serial.println(F("--- status ---"));
-  Serial.print(F("ETH link: ")); Serial.println(ethLinkUp ? F("UP") : F("DOWN"));
-  Serial.print(F("ETH IP:   ")); Serial.println(ethHasIp ? ethIp.toString() : String("0.0.0.0"));
-  Serial.print(F("MAC:      ")); Serial.println(ETH.macAddress());
-  Serial.print(F("Uptime:   ")); Serial.print(millis() / 1000); Serial.println(F("s"));
+  Serial.print(F("ETH link:   ")); Serial.println(ethLinkUp ? F("UP") : F("DOWN"));
+  Serial.print(F("ETH IP:     ")); Serial.println(ethHasIp ? ethIp.toString() : String("0.0.0.0"));
+  Serial.print(F("Subnet:     ")); Serial.println(ethHasIp ? ethSubnet.toString() : String("0.0.0.0"));
+  Serial.print(F("Gateway:    ")); Serial.println(ethHasIp ? ethGateway.toString() : String("0.0.0.0"));
+  Serial.print(F("MAC:        ")); Serial.println(ETH.macAddress());
+  Serial.print(F("Uptime:     ")); Serial.print(millis() / 1000); Serial.println(F("s"));
   for (uint8_t i = 0; i < 8; i++) {
     Serial.print(F("DI")); Serial.print(i + 1); Serial.print(F(": "));
     Serial.println(diStable[i] ? F("ACTIVE") : F("inactive"));
@@ -511,7 +533,9 @@ static void processCliCommand(String line) {
     printStatus();
   } else if (cmd == "ip") {
     Serial.print(F("link=")); Serial.print(ethLinkUp ? F("up") : F("down"));
-    Serial.print(F(" ip=")); Serial.println(ethHasIp ? ethIp.toString() : String("0.0.0.0"));
+    Serial.print(F(" ip=")); Serial.print(ethHasIp ? ethIp.toString() : String("0.0.0.0"));
+    Serial.print(F(" subnet=")); Serial.print(ethHasIp ? ethSubnet.toString() : String("0.0.0.0"));
+    Serial.print(F(" gateway=")); Serial.println(ethHasIp ? ethGateway.toString() : String("0.0.0.0"));
   } else if (cmd == "all") {
     String a = arg;
     a.toLowerCase();
@@ -558,6 +582,8 @@ static void handleSerialCli() {
 // ---------------------------------------------------------------------------
 
 static unsigned long lastHeartbeat = 0;
+static unsigned long lastDhcpWaitMsg = 0;
+static const unsigned long DHCP_WAIT_MSG_MS = 5000; // remind every 5s while link is up but no lease yet
 
 void setup() {
   Serial.begin(115200);
@@ -587,6 +613,18 @@ void loop() {
              ethLinkUp ? "up" : "down",
              ethHasIp ? ethIp.toString().c_str() : "0.0.0.0",
              (unsigned)ESP.getFreeHeap());
+    logEvent(msg);
+  }
+
+  // Visible proof the board is actively retrying DHCP, not silently stuck —
+  // if this keeps printing for more than ~30-60s, the board itself is fine
+  // and the problem is network-side (no DHCP server reachable on this link,
+  // wrong switch port, etc.), not a firmware issue.
+  if (ethLinkUp && !ethHasIp && (now - lastDhcpWaitMsg >= DHCP_WAIT_MSG_MS)) {
+    lastDhcpWaitMsg = now;
+    char msg[64];
+    snprintf(msg, sizeof(msg), "[ETH] still waiting for DHCP lease... (%lus since link up)",
+             (now - ethLinkUpSinceMs) / 1000);
     logEvent(msg);
   }
 }

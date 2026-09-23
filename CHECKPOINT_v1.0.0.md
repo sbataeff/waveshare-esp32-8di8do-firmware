@@ -17,6 +17,31 @@ says so explicitly.
   `all on`, `all off`, `ip`
 - Web UI loads and serves from the board: DI indicators, DO toggle buttons
   with optimistic click feedback, status/debug log, connected-client panel
+- Ethernet DHCP completes on the real board: serial log shows a clean
+  `eth=up ip=10.228.211.113` heartbeat, no "still waiting for DHCP" stall.
+  Since link came up and a full lease was obtained, this also validates
+  the W5500 SPI pin block (CS=GPIO16, IRQ=GPIO12, RST=GPIO39, SCK=GPIO15,
+  MISO=GPIO14, MOSI=GPIO13) by extension — wrong pins would not produce a
+  working link+lease
+- GUI client connection tracking (server side): serial log shows
+  `noteWebClient()`/`markStaleClients()` firing correctly — "new client
+  connected", "went stale — no response Ns", "reconnected" all logged as
+  expected for a real browser hitting the board
+
+## Watch items (working, but worth a longer look)
+
+- One connected client cycled stale→reconnect every ~8-10s instead of
+  staying continuously live, even though the page polls every 150ms and
+  `CLIENT_STALE_MS` is 3000ms. Most likely explanation: the browser tab
+  was in the background (serial monitor in focus instead) and got its JS
+  timers throttled by the browser — not a firmware bug. Worth a quick
+  recheck with the web UI tab kept in the foreground; if it still goes
+  stale there, that would point at a real polling bug instead.
+- Free heap drifted from 302292 to 296100 (~6KB) over about 5 minutes with
+  one client connected. Could be normal fragmentation from per-request
+  JSON/String building, could be a slow leak — not enough data yet from a
+  short run. Worth leaving it running (with a client connected) for 30+
+  minutes to see if it plateaus.
 
 ## Verified only by automated smoke test (Playwright against a mock server
 ## standing in for the ESP32) — not yet exercised on the actual board
@@ -29,10 +54,9 @@ parsing, byte counts, timer restarts, network isolation, etc. — see the
 corresponding commit messages for what each test actually checked), but
 none of that is a substitute for running on the real board:
 
-- Ethernet subnet/gateway reporting, `ARDUINO_EVENT_ETH_LOST_IP` handling,
-  the "still waiting for DHCP" heartbeat
-- GUI client connection tracking (`/api/clients`) and the page-side
-  connection watchdog banner
+- The page-side connection watchdog banner (server-side client tracking is
+  now confirmed above, but the browser-side "⚠ NOT LIVE" banner itself
+  hasn't been visually confirmed on the real board yet)
 - IP camera feed: rewritten from `<img src>` to a hand-rolled
   `multipart/x-mixed-replace` parser (needed for real byte counting),
   with 1s auto-reconnect
@@ -46,18 +70,12 @@ none of that is a substitute for running on the real board:
 
 ## Not yet confirmed at all
 
-- W5500 Ethernet SPI pins (CS=GPIO16, IRQ=GPIO12, RST=GPIO39, SCK=GPIO15,
-  MISO=GPIO14, MOSI=GPIO13) — sourced from `hennejg/waveshare-ESP32-S3-io`
-  driver code, not from the user's own tested hardware or the official
-  Waveshare diagram (that pin block was never shared)
-- Whether DHCP actually completes on the real board (link-up was observed
-  in an earlier serial log; a completed lease with IP/subnet/gateway
-  printed was not, as of this checkpoint) — if it's still stuck, the
-  "still waiting for DHCP" heartbeat added since should show whether it's
-  actively retrying or genuinely stuck, which is the next thing to check
-  against the real hardware
+- IP camera feed, Connection Speed Test/latency ticker, Bandwidth/Latency
+  Trend charts, and the ENABLE/DISABLE master switch — still only
+  exercised against the mock server, not the real board (see the smoke
+  test list above)
 
 ## Known-good commit
 
-`a6b17f6` — "Add top-right ENABLE/DISABLE master switch to stop all ESP32
-traffic"
+`72a9e01` — "Checkpoint v1.0.0: version marker, updated README,
+hardware-vs-test-only status" (tagged as the `v1.0.0` GitHub release)

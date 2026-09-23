@@ -103,6 +103,15 @@ so that block is normally the only change needed.
     to the board — the banner also forces an immediate refresh on tab
     focus and on bfcache restore (`pageshow`), which is exactly the "seeing
     cache or history" case
+  - An **IP Camera Feed** panel that renders an MJPEG stream (e.g. from an
+    Android "IP Webcam" app's `http://<phone-ip>:8080/video` URL) directly
+    via an `<img>` tag, with an editable URL field (remembered per-browser
+    in `localStorage`) and a Reconnect button. This is purely browser-side
+    — the ESP32 never sees this traffic — so it only works if the browser
+    viewing the page can itself reach the camera's address. Default is set
+    to `http://100.69.34.95:8080/video`; that's a Tailscale/CGNAT-range
+    address (100.64.0.0/10), so it will only load for browsers that can
+    also reach that network.
   - A scrolling Status/Debug log panel (device-side ring buffer, last 30
     events: input changes, output changes, Ethernet link events, GUI
     client connect/reconnect/stale events, heartbeats)

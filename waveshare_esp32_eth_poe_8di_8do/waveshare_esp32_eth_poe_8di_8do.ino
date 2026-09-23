@@ -380,6 +380,12 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
  .status-pill.up{background:#1e3d2c;color:#3ddc84}
  .status-pill.down{background:#3d1e1e;color:#e0776d}
  #connBanner{display:none;background:#3d1e1e;color:#ffb4a8;border:1px solid #7a3a2f;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+ .camCard{grid-column:1/-1}
+ .camRow{display:flex;gap:6px;margin-bottom:8px}
+ .camRow input{flex:1;background:#0d1117;color:#e6e6e6;border:1px solid #3a4256;border-radius:6px;padding:6px 8px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+ #camWrap{position:relative;background:#0d1117;border-radius:6px;min-height:120px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+ #camImg{max-width:100%;display:block}
+ #camError{display:none;color:#e0776d;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:16px;text-align:center}
 </style></head><body>
 <h1>WaveShare ESP32 8DI/8DO Console</h1>
 <div id="connBanner"></div>
@@ -388,6 +394,17 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
   <div class="card"><h2>Digital Outputs</h2><div id="doList"></div></div>
   <div class="card"><h2>Device / Connected Client</h2><div id="deviceInfo"></div></div>
   <div class="card"><h2>GUI Clients</h2><div id="clientsList"></div></div>
+  <div class="card camCard"><h2>IP Camera Feed</h2>
+    <div class="camRow">
+      <input id="camUrlInput" type="text" placeholder="http://phone-ip:8080/video">
+      <button id="camSetBtn">Set</button>
+      <button id="camRetryBtn">Reconnect</button>
+    </div>
+    <div id="camWrap">
+      <img id="camImg" alt="camera feed">
+      <div id="camError">No camera feed — set the IP Webcam URL above and make sure the app is running and reachable from this browser.</div>
+    </div>
+  </div>
   <div class="card"><h2>Status / Debug Log</h2><div id="log"></div></div>
 </div>
 <script>
@@ -519,6 +536,38 @@ async function refreshClients(){
   }catch(e){}
   finally{ clientsInflight = false; }
 }
+// IP camera feed (e.g. an Android "IP Webcam" app's MJPEG /video URL).
+// Purely browser-side: the ESP32 never touches this traffic, your browser
+// connects to the camera directly, so it only works if this browser can
+// reach that address on your network. The URL is remembered per-browser
+// (localStorage), not stored on the device.
+const CAM_DEFAULT_URL = 'http://100.69.34.95:8080/video';
+const camImg = document.getElementById('camImg');
+const camError = document.getElementById('camError');
+const camUrlInput = document.getElementById('camUrlInput');
+
+function loadCamUrl(url){
+  if (!url) return;
+  camError.style.display = 'none';
+  camImg.style.display = 'block';
+  // Cache-bust so "Reconnect" actually opens a fresh stream instead of
+  // reusing a dead one the browser thinks is still the same resource.
+  camImg.src = url + (url.includes('?') ? '&' : '?') + '_=' + Date.now();
+}
+camImg.onerror = () => { camImg.style.display = 'none'; camError.style.display = 'block'; };
+
+let savedCamUrl;
+try { savedCamUrl = localStorage.getItem('camUrl'); } catch(e) {}
+camUrlInput.value = savedCamUrl || CAM_DEFAULT_URL;
+loadCamUrl(camUrlInput.value);
+
+document.getElementById('camSetBtn').onclick = () => {
+  const url = camUrlInput.value.trim();
+  try { localStorage.setItem('camUrl', url); } catch(e) {}
+  loadCamUrl(url);
+};
+document.getElementById('camRetryBtn').onclick = () => loadCamUrl(camUrlInput.value.trim());
+
 buildRows();
 setInterval(refreshStatus, 150);
 setInterval(refreshLog, 1000);

@@ -198,15 +198,29 @@ const camImg = document.getElementById('camImg');
 const camError = document.getElementById('camError');
 const camUrlInput = document.getElementById('camUrlInput');
 
+// camConnected tracks whether the feed is actually up. The <img> load
+// attempt IS the "is it active" test — no separate ping needed. While
+// disconnected, a 1s timer keeps retrying; once connected, retries stop so
+// a healthy stream isn't interrupted, and an error later flips it back to
+// disconnected so retries resume automatically.
+let camConnected = false;
+
 function loadCamUrl(url){
   if (!url) return;
-  camError.style.display = 'none';
-  camImg.style.display = 'block';
-  // Cache-bust so "Reconnect" actually opens a fresh stream instead of
-  // reusing a dead one the browser thinks is still the same resource.
+  // Cache-bust so each attempt opens a fresh connection instead of the
+  // browser treating it as the same (possibly dead) resource.
   camImg.src = url + (url.includes('?') ? '&' : '?') + '_=' + Date.now();
 }
-camImg.onerror = () => { camImg.style.display = 'none'; camError.style.display = 'block'; };
+camImg.onload = () => {
+  camConnected = true;
+  camError.style.display = 'none';
+  camImg.style.display = 'block';
+};
+camImg.onerror = () => {
+  camConnected = false;
+  camImg.style.display = 'none';
+  camError.style.display = 'block';
+};
 
 let savedCamUrl;
 try { savedCamUrl = localStorage.getItem('camUrl'); } catch(e) {}
@@ -216,9 +230,14 @@ loadCamUrl(camUrlInput.value);
 document.getElementById('camSetBtn').onclick = () => {
   const url = camUrlInput.value.trim();
   try { localStorage.setItem('camUrl', url); } catch(e) {}
+  camConnected = false;
   loadCamUrl(url);
 };
-document.getElementById('camRetryBtn').onclick = () => loadCamUrl(camUrlInput.value.trim());
+document.getElementById('camRetryBtn').onclick = () => { camConnected = false; loadCamUrl(camUrlInput.value.trim()); };
+// Auto-reconnect: every 1s, if not currently connected, try again.
+setInterval(() => {
+  if (!camConnected) loadCamUrl(camUrlInput.value.trim());
+}, 1000);
 
 buildRows();
 setInterval(refreshStatus, 150);

@@ -106,12 +106,17 @@ so that block is normally the only change needed.
   - An **IP Camera Feed** panel that renders an MJPEG stream (e.g. from an
     Android "IP Webcam" app's `http://<phone-ip>:8080/video` URL) directly
     via an `<img>` tag, with an editable URL field (remembered per-browser
-    in `localStorage`) and a Reconnect button. This is purely browser-side
-    — the ESP32 never sees this traffic — so it only works if the browser
-    viewing the page can itself reach the camera's address. Default is set
-    to `http://100.69.34.95:8080/video`; that's a Tailscale/CGNAT-range
-    address (100.64.0.0/10), so it will only load for browsers that can
-    also reach that network.
+    in `localStorage`) and a Reconnect button. **Auto-reconnect**: every 1s,
+    if the feed isn't currently connected, the browser retries loading it —
+    the load attempt itself is the "is the camera up" test, so as soon as
+    the phone's camera app comes back online the feed starts streaming
+    again with no manual action; a healthy stream is never interrupted by
+    these checks since retries only happen while disconnected. This is
+    purely browser-side — the ESP32 never sees this traffic — so it only
+    works if the browser viewing the page can itself reach the camera's
+    address. Default is set to `http://100.69.34.95:8080/video`; that's a
+    Tailscale/CGNAT-range address (100.64.0.0/10), so it will only load for
+    browsers that can also reach that network.
   - A scrolling Status/Debug log panel (device-side ring buffer, last 30
     events: input changes, output changes, Ethernet link events, GUI
     client connect/reconnect/stale events, heartbeats)

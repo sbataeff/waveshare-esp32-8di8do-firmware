@@ -86,10 +86,11 @@ static const uint8_t DI_PINS[8] = {4, 5, 6, 7, 8, 9, 10, 11};
 static const bool INPUTS_ACTIVE_LOW = true;
 
 // Digital outputs DO1..DO8 (TCA9554 expander pins 0..7 drive Darlington
-// sink outputs). Writing the expander pin HIGH turns the Darlington ON
-// (matches Waveshare's own reference firmware for this board family);
-// flip to true if your outputs read backward.
-static const bool OUTPUTS_ACTIVE_LOW = false;
+// sink outputs). Confirmed active-LOW (writing the expander pin LOW turns
+// the Darlington ON) by the user's own tested hardware — "on" was
+// physically turning outputs off with the earlier active-high default,
+// so that guess (taken from a reference driver, not this board) was wrong.
+static const bool OUTPUTS_ACTIVE_LOW = true;
 
 // ---------------------------------------------------------------------------
 // Device identity / behavior
@@ -221,6 +222,12 @@ static bool setOutput(uint8_t channel1to8, bool on) {
 static bool getOutput(uint8_t channel1to8) {
   if (channel1to8 < 1 || channel1to8 > 8) return false;
   return outputState & (1 << (channel1to8 - 1));
+}
+
+static void setAllOutputs(bool on) {
+  outputState = on ? 0xFF : 0x00;
+  applyOutputs();
+  logEvent(on ? "[DO] all -> ON" : "[DO] all -> OFF");
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +430,8 @@ static void printHelp() {
   Serial.println(F("  on <1-8>          - turn output DOn ON"));
   Serial.println(F("  off <1-8>         - turn output DOn OFF"));
   Serial.println(F("  toggle <1-8>      - toggle output DOn"));
+  Serial.println(F("  all on            - turn all 8 outputs ON"));
+  Serial.println(F("  all off           - turn all 8 outputs OFF"));
   Serial.println(F("  ip                - show current DHCP IP / link state"));
 }
 
@@ -459,6 +468,18 @@ static void processCliCommand(String line) {
   } else if (cmd == "ip") {
     Serial.print(F("link=")); Serial.print(ethLinkUp ? F("up") : F("down"));
     Serial.print(F(" ip=")); Serial.println(ethHasIp ? ethIp.toString() : String("0.0.0.0"));
+  } else if (cmd == "all") {
+    String a = arg;
+    a.toLowerCase();
+    if (a == "on") {
+      setAllOutputs(true);
+      Serial.println(F("All outputs ON"));
+    } else if (a == "off") {
+      setAllOutputs(false);
+      Serial.println(F("All outputs OFF"));
+    } else {
+      Serial.println(F("error: expected 'all on' or 'all off'"));
+    }
   } else if (cmd == "on" || cmd == "off" || cmd == "toggle") {
     int ch = arg.toInt();
     if (ch < 1 || ch > 8) {

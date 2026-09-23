@@ -76,6 +76,7 @@ so that block is normally the only change needed.
   - `help` — list commands
   - `status` — print all DI/DO states plus Ethernet link/IP
   - `on <1-8>` / `off <1-8>` / `toggle <1-8>` — manually drive an output
+  - `all on` / `all off` — drive all 8 outputs at once
   - `ip` — print current link state / DHCP IP
   - Every DI channel auto-reports over serial the moment it goes active or
     inactive (debounced ~20ms), e.g. `[DI3] ACTIVE`
@@ -99,10 +100,11 @@ so that block is normally the only change needed.
   energized input reads GPIO LOW. Confirmed by a serial CLI sketch the user
   has run and verified working on their own board. Flip the flag if your
   board reads backward.
-- Digital outputs default to **active-high** at the TCA9554
-  (`OUTPUTS_ACTIVE_LOW = false`): writing an expander pin high turns its
-  Darlington output on, matching the reference driver's default and the
-  Darlington sink-driver topology. Flip if yours behave inverted.
+- Digital outputs are **active-LOW** at the TCA9554
+  (`OUTPUTS_ACTIVE_LOW = true`): writing an expander pin low turns its
+  Darlington output on. Confirmed by the user's own tested hardware — the
+  earlier active-high guess (from a reference driver, not this board) had
+  `on`/`off` backward. Flip the flag if your board reads inverted.
 - The web page polls `/api/status` and `/api/log` rather than using
   WebSockets/SSE, to keep the sketch dependency-free and to avoid blocking
   the CLI/input polling loop.
